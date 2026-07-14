@@ -12,7 +12,7 @@ Unless implemented elsewhere outside this repository and independently verified,
 - Paid ECMWF access, licensed ECMWF archive access, or GraphCast/AI weather-model feeds.
 - Automated Kalshi order placement, portfolio management, or execution controls.
 - Authenticated multi-user dashboard access.
-- Production deployment, systemd service management, monitored backups, or operational runbooks.
+- Production deployment, systemd service management, monitored backups, or production on-call runbooks.
 - Trained model calibration from historical Seattle market, forecast, and official-outcome data.
 
 ## Current product limitations and risks

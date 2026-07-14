@@ -45,6 +45,8 @@ The project should surface a concise view of six research layers while linking t
 
 Detailed planning lives in [temperature-forecasting-plan.md](temperature-forecasting-plan.md), [data-sources.md](data-sources.md), and [market-workflow-and-risk-controls.md](market-workflow-and-risk-controls.md).
 
+For day-to-day local operation, validation, database lifecycle, provenance checks, and troubleshooting, use the [runbook](runbook.md).
+
 ### Future ML roadmap
 
 After enough historical data is collected, the first ML target should be a gradient-boosted model that estimates probability by temperature bucket. This should produce calibrated output distributions that can be compared with Kalshi implied probabilities. Do not make this neural-network-first, and do not describe model output as guaranteed arbitrage.

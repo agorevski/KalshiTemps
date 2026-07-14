@@ -1,30 +1,10 @@
 # Copilot instructions for Kalshi Temps
 
-Kalshi Temps is a Python/FastAPI + SQLite research product for Seattle daily high-temperature evidence. The goal is decision support and recordkeeping for Kalshi climate-market research, not guaranteed arbitrage or unattended trading.
+Kalshi Temps is a Python 3.11/FastAPI + SQLite research product for Seattle daily high-temperature evidence and Kalshi climate-market decision support. It is a local/demo research and recordkeeping tool unless live collectors, calibration, authentication, deployment, and compliance controls are explicitly implemented and verified. Never imply guaranteed arbitrage, financial advice, or unattended trading.
 
-## Core engineering practices
+## Core commands
 
-- Prefer small, well-tested, dependency-light changes. Use the Python standard library where practical.
-- Keep runtime data out of source control. The default local database is `data/kalshi_temps.sqlite3`, configurable with `KALSHI_TEMPS_DB`.
-- Preserve provenance for every collected value: source name, endpoint or URL, station/product identifier, observation/valid/issue time, ingest time, raw payload or hash, parser status, and QC notes.
-- Do not silently coerce or ignore malformed weather/market inputs. Raise clear errors, log explicit app events, or mark records stale/invalid using existing patterns.
-- Keep domain logic deterministic and testable in pure modules where possible. FastAPI routes should orchestrate repository/domain calls rather than embedding calculations.
-- Maintain a clear separation between raw observations, normalized records, derived features, hypotheses, and market snapshots.
-- Add or update tests for new behavior. Prefer focused unit tests for parsers/fusion utilities and integration tests for SQLite + FastAPI routes.
-- Avoid unnecessary casts, broad exception handlers, hidden fallbacks, and success-shaped defaults.
-- Do not add automated betting behavior unless explicitly requested and accompanied by compliance, risk-control, and human-confirmation design.
-
-## Existing project shape
-
-- App: `src/kalshi_temps/app.py`
-- SQLite schema and migration helpers: `src/kalshi_temps/db.py`
-- Repository layer: `src/kalshi_temps/repository.py`
-- Demo seed data: `src/kalshi_temps/seed.py`
-- CLI: `src/kalshi_temps/cli.py` via `python -m kalshi_temps`
-- Dashboard template and styles: `templates/dashboard.html`, `static/styles.css`
-- Planning docs: `docs/`
-
-Useful commands:
+Run commands from the repository root. Use `PYTHONPATH=src` unless the package is installed editable.
 
 ```bash
 PYTHONPATH=src python -m kalshi_temps init-db
@@ -34,73 +14,80 @@ PYTHONPATH=src python -m compileall -q src tests
 PYTHONPATH=src pytest
 ```
 
-## Weather-research guidance
+Use `KALSHI_TEMPS_DB` to override the default local database path, `data/kalshi_temps.sqlite3`. Keep runtime data under `data/` out of source control.
 
-Approach Seattle daily high prediction as a data-fusion problem. A strong weather researcher would treat disagreement, timing, metadata, and uncertainty as first-class signals.
+## Architecture map
 
-### 1. Verify settlement before analysis
+- `src/kalshi_temps/app.py` — FastAPI app, dashboard routes, read-only JSON endpoints, health checks, startup DB initialization. Keep routes thin.
+- `src/kalshi_temps/db.py` — SQLite connection, schema initialization, lightweight column migrations. Enable foreign keys per connection.
+- `src/kalshi_temps/repository.py` — repository boundary for direct SQL. Return plain dictionaries or typed records; avoid burying domain policy in SQL helpers.
+- `src/kalshi_temps/ingest.py` — deterministic normalization, provenance hashes, and fetch helpers/stubs for future collectors.
+- `src/kalshi_temps/fusion.py` — pure data-fusion utilities: model spread, market-implied probability conversion, freshness checks, and risk guards.
+- `src/kalshi_temps/seed.py` — visibly demo-only sample data.
+- `src/kalshi_temps/cli.py` / `python -m kalshi_temps` — local DB and demo-data commands.
+- `templates/dashboard.html`, `static/styles.css` — local/mobile-first dashboard UI.
+- `tests/` — focused unit tests for pure utilities and integration tests for FastAPI + SQLite.
+- `docs/` — planning, source, schema, Tailscale, roadmap, and safety documentation.
 
-- Always verify the market-specific Kalshi settlement rule before treating a signal as actionable.
-- Record station, product, source, time zone, daily cutoff, rounding behavior, correction/fallback rules, and rule verification timestamp.
-- Treat the KSEA / Weather Underground settlement claim as a hypothesis until confirmed in the specific market text.
+## Engineering standards
 
-### 2. Forecast models: preserve disagreement
+- Prefer small, dependency-light, well-tested changes. Use the standard library where practical.
+- Keep domain logic deterministic and testable in pure modules. FastAPI handlers should orchestrate repository/service calls rather than calculate forecasts or parse payloads inline.
+- Keep raw observations, normalized records, derived features, hypotheses, market snapshots, and official outcomes separate.
+- Do not silently coerce or ignore malformed weather/market inputs. Raise clear `ValueError`s, log explicit app events, or mark records stale/invalid using existing patterns.
+- Avoid broad exception handlers, hidden fallbacks, unnecessary casts, success-shaped defaults, and network-dependent tests.
+- Preserve backward-compatible SQLite initialization where possible. Add indexes and schema fields deliberately, and document schema/risk changes.
+- Add/update tests for behavior changes: pure parser/fusion unit tests first; SQLite/FastAPI integration tests for persistence or routes.
 
-- Collect raw guidance rather than relying on consumer weather blends.
-- Track HRRR, NAM, GFS, NBM, ECMWF where licensed, and GraphCast/AI products where available.
-- Store run time, model cycle, valid date/time, target date, predicted high, source URL, provenance, and notes.
-- Model spread is a signal. Do not average it away without also surfacing spread, run-to-run change, and regime context.
+## Data and provenance rules
 
-### 3. Seattle marine layer is central
+For every collected or derived value, preserve enough metadata to audit the conclusion:
 
-- For Seattle, morning marine clouds/fog/stratus burn-off timing can move the final high by multiple degrees.
-- Prioritize 8-10 AM local updates: visible satellite trends, cloud ceiling, cloud cover, Puget Sound fog, marine push, wind shift, dew point, pressure, and solar radiation.
-- Encode whether the marine layer cleared before 10 AM as a feature, not a narrative-only note.
+- source name/type, endpoint or URL, license/terms note when relevant;
+- station/product/location identifier and source class;
+- observation time, valid time, issue time, ingest/capture time, and local-day interpretation when settlement depends on it;
+- raw payload or stable raw-payload hash, normalized values, units, conversion method, parser status, QC flags/notes, and stale-data status.
 
-### 4. Observations need station discipline
+Use UTC for canonical timestamps where possible, plus Seattle/local-market timestamps where daily cutoff, DST, or settlement wording matters. Treat demo, replay, paper-live, and live records as distinct states; never mix them without durable labeling.
 
-- Track the verified settlement station first, then KSEA and surrounding ASOS/AWOS/METAR/NWS stations as context.
-- Personal Weather Stations are low-trust context unless calibrated; label them accordingly.
-- Watch for station mismatch, elevation difference, water exposure, rooftop/urban heat-island effects, sensor outages, frozen values, implausible jumps, and timestamp ambiguity.
-- METAR values may be rounded and may miss intrahour extremes; do not treat them as official daily highs unless the market settles on that exact product.
+## Weather and market-research rules
 
-### 5. Build historical bias by regime
-
-- Store predicted high versus official actual high for each model and day.
-- Segment errors by weather regime: marine layer, offshore flow, heat wave, persistent clouds, season, and time of day.
-- Prefer calibrated bias tables and transparent rules before complex models.
-- Example hypothesis to test: HRRR may overestimate highs when marine clouds persist after 10 AM.
-
-### 6. Intraday nowcasting
-
-- Generate recurring 7 AM, 9 AM, 11 AM, and noon snapshots.
-- Include current temperature, intraday max, warming rate, dew point, wind, pressure, cloud trend, yesterday comparison, model spread, and bucket probabilities.
-- Express output as a probability distribution over temperature buckets, not a single “answer.”
-
-### 7. Market data is another signal, not truth
-
-- Convert bid/ask/mid prices to implied probabilities by bucket.
-- Compare market-implied distributions to model/research distributions and show deltas.
-- Use cautious language: “research edge,” “probability delta,” or “expected-value candidate,” never “guaranteed arbitrage.”
-- Always surface stale-data, unverified-rule, wide-spread, and proxy-only guards before any decision support.
+- Verify the market-specific Kalshi settlement rule before treating a signal as actionable. Record source, station, product, time zone, daily cutoff, units, rounding, fallback/correction rules, and verification timestamp.
+- Treat any KSEA / Weather Underground settlement claim as a hypothesis until confirmed in the exact market text.
+- Preserve forecast disagreement. Store HRRR, NAM, GFS, NBM, ECMWF only where licensed, and AI/GraphCast-style products only where access and validation are legitimate. Surface model spread and run-to-run changes; do not average away uncertainty.
+- For Seattle, make marine-layer timing first-class: morning stratus/fog, visible satellite trend, cloud ceiling, marine push, wind shift, dew point, pressure, solar radiation, and whether clouds cleared before 10 AM.
+- Track the verified settlement station first, then KSEA and surrounding ASOS/AWOS/METAR/NWS stations as context. Label Personal Weather Stations as low-trust unless individually calibrated.
+- Do not treat METAR hourly/rounded values as official daily highs unless the market settles on that exact product.
+- Build historical bias by verified outcome, model, station, season, lead time, and regime: marine layer, offshore flow, heat wave, persistent clouds, and similar tags.
+- Intraday nowcasts should produce bucket probability distributions and caveats, not a single “answer.”
+- Kalshi prices are another signal, not truth. Convert bid/ask/mid to implied probabilities, compare with research distributions, and surface spread, liquidity, stale-data, proxy-source, and unverified-rule guards.
 
 ## Dashboard and UX expectations
 
-- Optimize for phone readability over Tailscale: concise cards, clear status labels, minimal dense tables, and visible timestamps.
-- The dashboard should answer: what is the current observed high, how fresh are sources, how much do models disagree, what is the marine-layer status, what buckets are implied by the market, and what caveats block action?
-- Demo data must be visibly distinguishable from live data once live ingestion exists.
-- Never hide settlement-source uncertainty or stale-source status behind a “green” UI.
+- Optimize for phone readability over private access: concise cards, obvious timestamps, status chips, and minimal dense tables.
+- The dashboard should quickly answer: verified settlement status, current observed high, source freshness, model disagreement, marine-layer status, bucket probabilities, market-implied probabilities, and action-blocking caveats.
+- Demo data must be unmistakably labeled. Do not display demo values as live observations, live market prices, calibrated probabilities, or official outcomes.
+- Never hide stale data, settlement uncertainty, proxy-only observations, high model spread, or uncalibrated output behind a green/success UI.
 
 ## Documentation expectations
 
-- Update docs when behavior, schema, commands, or risk posture changes.
-- Keep `docs/shortcomings-and-roadmap.md` honest about missing ingestion, calibration, live market data, authentication, deployment, and compliance controls.
-- Document assumptions and future work explicitly rather than implying the product is complete when it is only demo/local research capable.
+- Update docs when behavior, schema, commands, deployment posture, data semantics, or risk posture changes.
+- Keep `docs/shortcomings-and-roadmap.md` honest about missing live ingestion, live Kalshi data, calibration, authentication, operations, and compliance controls.
+- Prefer explicit assumptions and future work over language implying the product is production-ready.
+- Do not edit `README.md` or `docs/runbook.md` unless the task specifically requires it.
 
-## Safety and compliance
+## Safety and compliance boundaries
 
-- This repository must not provide financial advice.
-- Do not commit secrets, API keys, account identifiers, private exports, or paid/licensed data.
-- Do not expose the dashboard publicly without authentication, authorization, and data-handling review.
-- Tailscale/tailnet access should default to private access; distinguish Tailscale Serve from Funnel and warn before public exposure.
-- Automated trading requires explicit human approval, risk limits, audit logs, compliance review, and separate implementation instructions.
+- This repository must not provide financial advice. Use language such as “research signal,” “probability delta,” or “expected-value candidate with caveats,” never “guaranteed arbitrage.”
+- Do not add automated betting, order placement, account management, or execution controls unless explicitly requested and accompanied by human confirmation, risk limits, audit logging, kill-switch, credentials, and compliance-review design.
+- Do not commit secrets, API keys, account identifiers, private exports, paid/licensed data, or credentials.
+- Do not expose the dashboard publicly without authentication, authorization, logging, and data-handling review. Prefer loopback binding and private Tailscale/SSH access; distinguish Tailscale Serve from Funnel.
+- Respect data-provider licenses, Kalshi terms, and applicable law. Keep research output auditable and challengeable.
+
+## Do not do
+
+- Do not claim live NOAA/NWS/METAR/model/Kalshi ingestion, calibrated ML, authentication, production deployment, or trading controls exist unless verified in code.
+- Do not make “actionable” output when settlement source is unverified, data are stale, observations are proxy-only, or market data are missing.
+- Do not collapse uncertainty into a single recommendation.
+- Do not add heavy dependencies, hidden network calls, background schedulers, or public exposure as incidental changes.
+- Do not weaken provenance, demo/live labeling, or safety caveats to make the UI look complete.
