@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -12,14 +14,16 @@ from .repository import WeatherRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-app = FastAPI(title="Kalshi Temps", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    initialize_database()
+    yield
+
+
+app = FastAPI(title="Kalshi Temps", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "static"), name="static")
 templates = Jinja2Templates(directory=PROJECT_ROOT / "templates")
-
-
-@app.on_event("startup")
-def startup() -> None:
-    initialize_database()
 
 
 @app.get("/")
@@ -53,10 +57,11 @@ def dashboard(request: Request) -> HTMLResponse:
         marine_indicators = repo.list_marine_indicators(limit=4)
         market_snapshots = repo.list_market_snapshots(limit=6)
         events = repo.list_events(limit=6)
+        fusion_summary = repo.fusion_summary()
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {
-            "request": request,
             "observations": observations,
             "sources": sources,
             "daily_high": daily_high,
@@ -65,6 +70,7 @@ def dashboard(request: Request) -> HTMLResponse:
             "marine_indicators": marine_indicators,
             "market_snapshots": market_snapshots,
             "events": events,
+            "fusion_summary": fusion_summary,
         },
     )
 
@@ -81,3 +87,24 @@ def api_sources() -> dict[str, object]:
     with connection() as conn:
         sources = WeatherRepository(conn).list_sources()
     return {"sources": sources}
+
+
+@app.get("/api/fusion/summary")
+def api_fusion_summary() -> dict[str, object]:
+    with connection() as conn:
+        summary = WeatherRepository(conn).fusion_summary()
+    return {"summary": summary}
+
+
+@app.get("/api/market-snapshots")
+def api_market_snapshots(limit: int = Query(default=50, ge=1, le=500)) -> dict[str, object]:
+    with connection() as conn:
+        snapshots = WeatherRepository(conn).list_market_snapshots(limit=limit)
+    return {"market_snapshots": snapshots}
+
+
+@app.get("/api/model-runs")
+def api_model_runs(limit: int = Query(default=50, ge=1, le=500)) -> dict[str, object]:
+    with connection() as conn:
+        model_runs = WeatherRepository(conn).list_model_runs(limit=limit)
+    return {"model_runs": model_runs}

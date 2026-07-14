@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
+from .fusion import compare_bucket_probabilities, evaluate_freshness, generate_risk_guards
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -165,6 +167,19 @@ class WeatherRepository:
         ).fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    def latest_model_bucket_probabilities(self) -> dict[str, float]:
+        rows = self.conn.execute(
+            """
+            SELECT mpb.temperature_bucket, AVG(mpb.probability) AS probability
+            FROM model_probability_buckets mpb
+            JOIN model_runs mr ON mr.id = mpb.model_run_id
+            WHERE mr.target_date = (SELECT MAX(target_date) FROM model_runs)
+            GROUP BY mpb.temperature_bucket
+            ORDER BY mpb.temperature_bucket
+            """
+        ).fetchall()
+        return {row["temperature_bucket"]: row["probability"] for row in rows if row["probability"] is not None}
+
     def latest_model_spread(self) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM model_spread ORDER BY calculated_at DESC, id DESC LIMIT 1"
@@ -190,6 +205,114 @@ class WeatherRepository:
             (limit,),
         ).fetchall()
         return [_row_to_dict(row) for row in rows]
+
+    def latest_market_bucket_probabilities(self) -> dict[str, float]:
+        rows = self.conn.execute(
+            """
+            SELECT ms.temperature_bucket, ms.implied_probability
+            FROM market_snapshots ms
+            JOIN (
+                SELECT temperature_bucket, MAX(captured_at) AS captured_at
+                FROM market_snapshots
+                WHERE temperature_bucket IS NOT NULL AND implied_probability IS NOT NULL
+                GROUP BY temperature_bucket
+            ) latest
+              ON latest.temperature_bucket = ms.temperature_bucket
+             AND latest.captured_at = ms.captured_at
+            WHERE ms.implied_probability IS NOT NULL
+            ORDER BY ms.temperature_bucket, ms.id DESC
+            """
+        ).fetchall()
+        probabilities: dict[str, float] = {}
+        for row in rows:
+            probabilities.setdefault(row["temperature_bucket"], row["implied_probability"])
+        return probabilities
+
+    def source_freshness_summaries(self, *, max_age_minutes: float = 180) -> list[dict[str, Any]]:
+        evaluated_at = utc_now_iso()
+        summaries = []
+        for source in self.list_sources():
+            latest_at = source.get("latest_observation_at") or source.get("last_seen_at")
+            status = evaluate_freshness(
+                latest_at,
+                evaluated_at=evaluated_at,
+                max_age_minutes=max_age_minutes,
+            )
+            summaries.append(
+                {
+                    "source_name": source["name"],
+                    "source_type": source["source_type"],
+                    "url": source.get("url"),
+                    "latest_at": latest_at,
+                    "age_minutes": status.age_minutes,
+                    "max_age_minutes": status.max_age_minutes,
+                    "is_fresh": status.is_fresh,
+                    "is_stale": status.is_stale,
+                    "label": status.label,
+                }
+            )
+        return summaries
+
+    def risk_guard_status(self, *, freshness_max_age_minutes: float = 180) -> list[dict[str, Any]]:
+        freshness = self.source_freshness_summaries(max_age_minutes=freshness_max_age_minutes)
+        spread = self.latest_model_spread()
+        guards = generate_risk_guards(
+            settlement_source_verified=False,
+            is_stale=any(item["is_stale"] for item in freshness),
+            model_spread_f=spread["spread_f"] if spread else None,
+            high_spread_threshold_f=4,
+            proxy_only_observations=True,
+        )
+        return [
+            {
+                "key": guard.key,
+                "label": guard.label,
+                "severity": guard.severity,
+                "active": guard.active,
+            }
+            for guard in guards
+        ]
+
+    def bucket_probability_deltas(self) -> list[dict[str, Any]]:
+        deltas = compare_bucket_probabilities(
+            self.latest_model_bucket_probabilities(),
+            self.latest_market_bucket_probabilities(),
+        )
+        return [
+            {
+                "bucket": delta.bucket,
+                "model_probability": delta.model_probability,
+                "market_probability": delta.market_probability,
+                "probability_delta": delta.probability_delta,
+                "expected_edge_cents": delta.expected_edge_cents,
+                "note": "Descriptive model-vs-market difference only; not a trade recommendation.",
+            }
+            for delta in deltas
+        ]
+
+    def product_status(self) -> dict[str, Any]:
+        freshness = self.source_freshness_summaries()
+        guards = self.risk_guard_status()
+        active_guards = [guard for guard in guards if guard["active"]]
+        status = "needs-review" if active_guards else "research-populated"
+        return {
+            "status": status,
+            "label": "Research view needs review" if active_guards else "Research view populated",
+            "summary": "Evidence-only dashboard; verify official market rules and source freshness before interpreting probabilities.",
+            "source_count": len(freshness),
+            "stale_source_count": sum(1 for item in freshness if item["is_stale"]),
+            "active_guard_count": len(active_guards),
+        }
+
+    def fusion_summary(self) -> dict[str, Any]:
+        return {
+            "daily_high": self.daily_high(),
+            "model_spread": self.latest_model_spread(),
+            "source_freshness": self.source_freshness_summaries(),
+            "risk_guards": self.risk_guard_status(),
+            "bucket_deltas": self.bucket_probability_deltas(),
+            "product_status": self.product_status(),
+        }
 
     def list_events(self, limit: int = 8) -> list[dict[str, Any]]:
         rows = self.conn.execute(
