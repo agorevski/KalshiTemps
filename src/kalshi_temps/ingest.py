@@ -5,7 +5,7 @@ import json
 import re
 from datetime import date, datetime, time, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -16,6 +16,14 @@ _TEMP_DEW_RE = re.compile(r"^(?P<temp>M?\d{2})/(?P<dew>M?\d{2}|//)$")
 _ALTIMETER_RE = re.compile(r"^A(?P<hundredths>\d{4})$")
 _QNH_RE = re.compile(r"^Q(?P<mb>\d{4})$")
 _CEILING_RE = re.compile(r"^(BKN|OVC|VV)(?P<hundreds>\d{3})")
+
+DEFAULT_NWS_SEW_DISCUSSION_URL = (
+    "https://forecast.weather.gov/product.php?site=SEW&issuedby=SEW&product=AFD&format=txt&version=1&glossary=0"
+)
+DEFAULT_AVIATION_WEATHER_METAR_URL_TEMPLATE = (
+    "https://aviationweather.gov/api/data/metar?ids={station}&format=raw&taf=false"
+)
+TextFetcher = Callable[[str], str]
 
 
 def normalize_forecast_discussion(
@@ -128,6 +136,62 @@ def normalize_market_snapshot(record: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def collect_forecast_discussion(
+    url: str = DEFAULT_NWS_SEW_DISCUSSION_URL,
+    *,
+    fetcher: TextFetcher | None = None,
+    timeout: float = 10,
+    ingest_at: datetime | str | None = None,
+) -> dict[str, Any]:
+    """Fetch and normalize a public NWS forecast discussion with provenance."""
+    raw_text = _fetch_with_optional_fetcher(url, fetcher=fetcher, timeout=timeout)
+    normalized = normalize_forecast_discussion(raw_text, source_url=url)
+    collected_at = _datetime_to_iso(_parse_optional_datetime(ingest_at) or datetime.now(timezone.utc))
+    normalized.update(
+        {
+            "ingest_at": collected_at,
+            "raw_payload_hash": provenance_hash(raw_text),
+            "text_hash": provenance_hash(normalized["text"]),
+            "parser_status": "ok",
+            "parser_notes": "Parsed NWS text forecast discussion.",
+        }
+    )
+    return normalized
+
+
+def collect_metar_observation(
+    station: str = "KSEA",
+    *,
+    url: str | None = None,
+    fetcher: TextFetcher | None = None,
+    timeout: float = 10,
+    reference_date: date | datetime | str | None = None,
+    ingest_at: datetime | str | None = None,
+) -> dict[str, Any]:
+    """Fetch and normalize a public Aviation Weather METAR observation."""
+    station_id = station.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{3,4}", station_id):
+        raise ValueError("station must be a 3-4 character METAR station id")
+    source_url = url or DEFAULT_AVIATION_WEATHER_METAR_URL_TEMPLATE.format(station=station_id)
+    raw_text = _fetch_with_optional_fetcher(source_url, fetcher=fetcher, timeout=timeout)
+    metar = _select_metar_line(raw_text, station_id)
+    collected = _parse_optional_datetime(ingest_at) or datetime.now(timezone.utc)
+    normalized = normalize_observation(
+        metar,
+        reference_date=reference_date or collected.date(),
+        source_url=source_url,
+    )
+    normalized.update(
+        {
+            "ingest_at": _datetime_to_iso(collected),
+            "raw_payload_hash": provenance_hash(raw_text),
+            "parser_status": "ok",
+            "parser_notes": "Parsed Aviation Weather raw METAR.",
+        }
+    )
+    return normalized
+
+
 def source_freshness_metadata(
     *,
     source_name: str,
@@ -183,12 +247,34 @@ def fetch_text(url: str, *, timeout: float = 10, user_agent: str = "kalshi-temps
 
 def fetch_noaa_forecast_discussion(url: str, *, timeout: float = 10) -> dict[str, Any]:
     """Fetch and normalize a NOAA/NWS forecast discussion text product."""
-    return normalize_forecast_discussion(fetch_text(url, timeout=timeout), source_url=url)
+    return collect_forecast_discussion(url, timeout=timeout)
 
 
 def fetch_kalshi_market_snapshot(url: str, *, timeout: float = 10) -> str:
     """Documented stub for future Kalshi collection; callers parse authenticated payloads later."""
     return fetch_text(url, timeout=timeout)
+
+
+def _fetch_with_optional_fetcher(url: str, *, fetcher: TextFetcher | None, timeout: float) -> str:
+    if fetcher is None:
+        return fetch_text(url, timeout=timeout)
+    try:
+        return fetcher(url)
+    except Exception as exc:
+        raise ValueError(f"fetch failed for {url}: {exc}") from exc
+
+
+def _select_metar_line(raw_text: str, station: str) -> str:
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("METAR response did not contain any observations")
+    for line in lines:
+        tokens = line.split()
+        if tokens and tokens[0] in {"METAR", "SPECI"}:
+            tokens = tokens[1:]
+        if tokens and tokens[0].upper() == station:
+            return line
+    raise ValueError(f"METAR response did not contain station {station}")
 
 
 def _parse_metar_string(record: str, *, reference_date: date | datetime | str | None) -> dict[str, Any]:
@@ -351,6 +437,12 @@ def _parse_datetime_required(value: datetime | str | None, field: str) -> dateti
         except ValueError as exc:
             raise ValueError(f"{field} must be an ISO datetime") from exc
     raise ValueError(f"{field} must be a datetime or ISO datetime string")
+
+
+def _parse_optional_datetime(value: datetime | str | None) -> datetime | None:
+    if value is None or value == "":
+        return None
+    return _parse_datetime_required(value, "ingest_at")
 
 
 def _date_to_iso(value: Any, field: str) -> str:

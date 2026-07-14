@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .fusion import compare_bucket_probabilities, evaluate_freshness, generate_risk_guards
+from .quality import validate_forecast, validate_observation
 
 
 def utc_now_iso() -> str:
@@ -75,8 +76,17 @@ class WeatherRepository:
         cloud_ceiling_ft: int | None = None,
         solar_radiation_wm2: float | None = None,
         raw_payload: dict[str, Any] | str | None = None,
+        source_type: str = "weather",
+        source_url: str | None = None,
+        source_notes: str | None = None,
     ) -> dict[str, Any]:
-        source = self.upsert_source(source_name, last_seen_at=observed_at)
+        source = self.upsert_source(
+            source_name,
+            source_type=source_type,
+            url=source_url,
+            notes=source_notes,
+            last_seen_at=observed_at,
+        )
         payload = json.dumps(raw_payload, sort_keys=True) if isinstance(raw_payload, dict) else raw_payload
         self.conn.execute(
             """
@@ -123,6 +133,162 @@ class WeatherRepository:
             """,
             (source["id"], station, observed_at),
         ).fetchone()
+        return _row_to_dict(row)
+
+    def save_forecast_discussion(
+        self,
+        source_name: str,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        _require_fields(
+            record,
+            "product_id",
+            "ingest_at",
+            "text",
+            "text_hash",
+            "raw_payload_hash",
+            "parser_status",
+        )
+        source = self.upsert_source(
+            source_name,
+            source_type="forecast_discussion",
+            url=record.get("source_url"),
+            notes=record.get("parser_notes"),
+            last_seen_at=record.get("issued_at") or record.get("ingest_at"),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO forecast_discussions (
+                source_id, product_id, issued_at, ingest_at, source_url, text,
+                text_hash, raw_payload_hash, parser_status, parser_notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id, ingest_at, text_hash) DO UPDATE SET
+                source_id = excluded.source_id,
+                issued_at = excluded.issued_at,
+                source_url = excluded.source_url,
+                text = excluded.text,
+                raw_payload_hash = excluded.raw_payload_hash,
+                parser_status = excluded.parser_status,
+                parser_notes = excluded.parser_notes
+            """,
+            (
+                source["id"],
+                record["product_id"],
+                record.get("issued_at"),
+                record["ingest_at"],
+                record.get("source_url"),
+                record["text"],
+                record["text_hash"],
+                record["raw_payload_hash"],
+                record["parser_status"],
+                record.get("parser_notes"),
+            ),
+        )
+        row = self.conn.execute(
+            """
+            SELECT fd.*, s.name AS source_name
+            FROM forecast_discussions fd
+            LEFT JOIN data_sources s ON s.id = fd.source_id
+            WHERE fd.product_id = ? AND fd.ingest_at = ? AND fd.text_hash = ?
+            """,
+            (record["product_id"], record["ingest_at"], record["text_hash"]),
+        ).fetchone()
+        return _row_to_dict(row)
+
+    def list_forecast_discussions(self, limit: int = 10) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT fd.*, s.name AS source_name
+            FROM forecast_discussions fd
+            LEFT JOIN data_sources s ON s.id = fd.source_id
+            ORDER BY COALESCE(fd.issued_at, fd.ingest_at) DESC, fd.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def save_observation_record(self, source_name: str, record: dict[str, Any]) -> dict[str, Any]:
+        _require_fields(record, "station", "observed_at", "temperature_f")
+        source_url = record.get("source_url")
+        raw_payload = {
+            "raw_payload": record.get("raw_payload"),
+            "hash": record.get("hash"),
+            "raw_payload_hash": record.get("raw_payload_hash"),
+            "ingest_at": record.get("ingest_at"),
+            "parser_status": record.get("parser_status"),
+            "parser_notes": record.get("parser_notes"),
+            "source_url": source_url,
+        }
+        return self.add_observation(
+            source_name,
+            record["station"],
+            record["observed_at"],
+            record["temperature_f"],
+            dew_point_f=record.get("dew_point_f"),
+            wind_direction_deg=record.get("wind_direction_deg"),
+            wind_speed_mph=record.get("wind_speed_mph"),
+            pressure_mb=record.get("pressure_mb"),
+            cloud_ceiling_ft=record.get("cloud_ceiling_ft"),
+            raw_payload=raw_payload,
+            source_type="weather_observation",
+            source_url=source_url,
+            source_notes=record.get("parser_notes"),
+        )
+
+    def save_model_high_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        _require_fields(record, "run_at", "model_name", "target_date", "predicted_high_f")
+        self.conn.execute(
+            """
+            INSERT INTO model_runs (
+                run_at, model_name, model_cycle, valid_date, target_date,
+                predicted_high_f, source_url, provenance, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["run_at"],
+                record["model_name"],
+                record.get("model_cycle"),
+                record.get("valid_date"),
+                record["target_date"],
+                record["predicted_high_f"],
+                record.get("source_url"),
+                record.get("provenance") or record.get("provenance_hash"),
+                record.get("notes") or "Normalized placeholder model record; evidence only.",
+            ),
+        )
+        row = self.conn.execute("SELECT * FROM model_runs WHERE id = last_insert_rowid()").fetchone()
+        return _row_to_dict(row)
+
+    def save_market_snapshot_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        _require_fields(record, "ticker", "captured_at")
+        raw_payload = json.dumps(record, sort_keys=True)
+        self.conn.execute(
+            """
+            INSERT INTO market_snapshots (
+                market_ticker, temperature_bucket, captured_at, yes_bid_cents,
+                yes_ask_cents, no_bid_cents, no_ask_cents, last_price_cents,
+                implied_probability, settlement_source_note, raw_payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["ticker"],
+                record.get("bucket"),
+                record["captured_at"],
+                record.get("yes_bid"),
+                record.get("yes_ask"),
+                record.get("no_bid"),
+                record.get("no_ask"),
+                record.get("last"),
+                record.get("implied_probability"),
+                record.get("source_note") or "Normalized placeholder market record; not a trade recommendation.",
+                raw_payload,
+            ),
+        )
+        row = self.conn.execute("SELECT * FROM market_snapshots WHERE id = last_insert_rowid()").fetchone()
         return _row_to_dict(row)
 
     def list_observations(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -273,6 +439,42 @@ class WeatherRepository:
             for guard in guards
         ]
 
+    def observation_quality_summaries(self, *, limit: int = 50, max_age_minutes: float = 180) -> list[dict[str, Any]]:
+        observations = self.list_observations(limit=limit)
+        evaluated_at = utc_now_iso()
+        return [
+            {
+                "observation_id": observation["id"],
+                "source_name": observation["source_name"],
+                "station": observation["station"],
+                "observed_at": observation["observed_at"],
+                **validate_observation(
+                    observation,
+                    evaluated_at=evaluated_at,
+                    max_age_minutes=max_age_minutes,
+                    context_observations=observations,
+                ).as_dict(),
+            }
+            for observation in observations
+        ]
+
+    def forecast_quality_summaries(self, *, limit: int = 50, max_age_minutes: float = 24 * 60) -> list[dict[str, Any]]:
+        evaluated_at = utc_now_iso()
+        return [
+            {
+                "model_run_id": forecast["id"],
+                "model_name": forecast["model_name"],
+                "run_at": forecast["run_at"],
+                "target_date": forecast["target_date"],
+                **validate_forecast(
+                    forecast,
+                    evaluated_at=evaluated_at,
+                    max_age_minutes=max_age_minutes,
+                ).as_dict(),
+            }
+            for forecast in self.list_model_runs(limit=limit)
+        ]
+
     def bucket_probability_deltas(self) -> list[dict[str, Any]]:
         deltas = compare_bucket_probabilities(
             self.latest_model_bucket_probabilities(),
@@ -311,6 +513,8 @@ class WeatherRepository:
             "source_freshness": self.source_freshness_summaries(),
             "risk_guards": self.risk_guard_status(),
             "bucket_deltas": self.bucket_probability_deltas(),
+            "observation_quality": self.observation_quality_summaries(),
+            "forecast_quality": self.forecast_quality_summaries(),
             "product_status": self.product_status(),
         }
 
@@ -320,3 +524,9 @@ class WeatherRepository:
             (limit,),
         ).fetchall()
         return [_row_to_dict(row) for row in rows]
+
+
+def _require_fields(record: dict[str, Any], *fields: str) -> None:
+    for field in fields:
+        if field not in record or record[field] is None or record[field] == "":
+            raise ValueError(f"{field} is required")

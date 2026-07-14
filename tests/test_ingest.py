@@ -10,6 +10,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kalshi_temps.ingest import (  # noqa: E402
+    collect_forecast_discussion,
+    collect_metar_observation,
     normalize_forecast_discussion,
     normalize_market_snapshot,
     normalize_model_high,
@@ -49,6 +51,29 @@ def test_normalize_forecast_discussion_rejects_missing_product_id() -> None:
         normalize_forecast_discussion("Area Forecast Discussion text only")
 
 
+def test_collect_forecast_discussion_uses_injected_fetcher_and_provenance() -> None:
+    record = collect_forecast_discussion(
+        "https://example.test/afd",
+        fetcher=lambda url: "AFDSEW\nTue, 14 Jul 2026 17:30:00 GMT\nMarine layer clearing late.",
+        ingest_at="2026-07-14T18:00:00Z",
+    )
+
+    assert record["product_id"] == "AFDSEW"
+    assert record["issued_at"] == "2026-07-14T17:30:00+00:00"
+    assert record["ingest_at"] == "2026-07-14T18:00:00+00:00"
+    assert record["parser_status"] == "ok"
+    assert len(record["raw_payload_hash"]) == 64
+    assert len(record["text_hash"]) == 64
+
+
+def test_collect_forecast_discussion_surfaces_fetch_failures() -> None:
+    def failing_fetcher(url: str) -> str:
+        raise RuntimeError("network down")
+
+    with pytest.raises(ValueError, match="network down"):
+        collect_forecast_discussion("https://example.test/afd", fetcher=failing_fetcher)
+
+
 def test_normalize_metar_string_extracts_weather_fields() -> None:
     obs = normalize_observation(
         "KSEA 142253Z 24008KT 10SM FEW015 BKN025 22/13 A2992",
@@ -64,6 +89,21 @@ def test_normalize_metar_string_extracts_weather_fields() -> None:
     assert obs["pressure_mb"] == 1013.2
     assert obs["cloud_ceiling_ft"] == 2500
     assert len(obs["hash"]) == 64
+
+
+def test_collect_metar_observation_uses_injected_fetcher_and_provenance() -> None:
+    obs = collect_metar_observation(
+        "KSEA",
+        url="https://example.test/metar",
+        fetcher=lambda url: "\nKSEA 142253Z 24008KT 10SM FEW015 BKN025 22/13 A2992\n",
+        ingest_at="2026-07-14T23:00:00Z",
+    )
+
+    assert obs["station"] == "KSEA"
+    assert obs["observed_at"] == "2026-07-14T22:53:00+00:00"
+    assert obs["source_url"] == "https://example.test/metar"
+    assert obs["parser_status"] == "ok"
+    assert len(obs["raw_payload_hash"]) == 64
 
 
 def test_normalize_observation_mapping_accepts_aliases() -> None:

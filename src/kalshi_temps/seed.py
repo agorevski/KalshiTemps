@@ -18,6 +18,10 @@ def seed_demo_data(db_path: str | None = None) -> None:
     ]
     with connection(db_path) as conn:
         repo = WeatherRepository(conn)
+        conn.execute("DELETE FROM market_snapshots WHERE market_ticker = ?", ("DEMO-KSEA-HIGH",))
+        conn.execute("DELETE FROM model_spread WHERE notes LIKE ?", ("Demo disagreement tracker across HRRR,%",))
+        conn.execute("DELETE FROM model_runs WHERE provenance = ?", ("Demo seed data; replace with fetched model source URL when ingestion is added.",))
+        conn.execute("DELETE FROM app_events WHERE event_type = ?", ("demo.seeded",))
         for source_name, url, station, hours_ago, temp, dew_point, wind_dir, wind_speed, pressure, ceiling, solar in samples:
             repo.upsert_source(source_name, url=url, notes="Demo source for local dashboard development")
             observed_at = (base + timedelta(hours=hours_ago)).isoformat()
@@ -41,6 +45,7 @@ def seed_demo_data(db_path: str | None = None) -> None:
             notes="Placeholder provenance for HRRR/NAM/GFS/ECMWF/GraphCast/NBM model fusion.",
             last_seen_at=base.isoformat(),
         )
+        conn.execute("DELETE FROM marine_layer_indicators WHERE source_id = ?", (forecast_source["id"],))
         target_date = base.date().isoformat()
         model_runs = [
             ("HRRR", "18z", 75.0, 0.62, "Rapid-refresh hourly guidance"),

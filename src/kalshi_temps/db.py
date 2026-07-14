@@ -65,6 +65,22 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 UNIQUE(source_id, station, observed_at)
             );
 
+            CREATE TABLE IF NOT EXISTS forecast_discussions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER REFERENCES data_sources(id) ON DELETE SET NULL,
+                product_id TEXT NOT NULL,
+                issued_at TEXT,
+                ingest_at TEXT NOT NULL,
+                source_url TEXT,
+                text TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                raw_payload_hash TEXT NOT NULL,
+                parser_status TEXT NOT NULL,
+                parser_notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(product_id, ingest_at, text_hash)
+            );
+
             CREATE TABLE IF NOT EXISTS market_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 market_ticker TEXT NOT NULL,
@@ -140,6 +156,7 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
 
             CREATE INDEX IF NOT EXISTS idx_observations_observed_at ON observations(observed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_observations_source ON observations(source_id);
+            CREATE INDEX IF NOT EXISTS idx_forecast_discussions_issued ON forecast_discussions(issued_at DESC);
             CREATE INDEX IF NOT EXISTS idx_model_runs_target ON model_runs(target_date, model_name);
             CREATE INDEX IF NOT EXISTS idx_market_snapshots_bucket ON market_snapshots(temperature_bucket, captured_at DESC);
             CREATE INDEX IF NOT EXISTS idx_probability_buckets_run ON model_probability_buckets(model_run_id);
