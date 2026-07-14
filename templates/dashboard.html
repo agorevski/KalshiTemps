@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Seattle High-Temperature Evidence</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">Kalshi Temps</p>
+        <h1>Seattle high-temperature evidence</h1>
+        <p>Local SQLite dashboard for a six-layer data-fusion workflow: observations, model guidance,
+          marine-layer signals, market buckets, probability buckets, and audit freshness.</p>
+      </header>
+
+      <section class="card highlight">
+        <span>Current daily max</span>
+        {% if daily_high %}
+          <strong>{{ "%.1f"|format(daily_high.high_temperature_f) }}°F</strong>
+          <small>{{ daily_high.observation_count }} observations on {{ daily_high.observed_date }}</small>
+        {% else %}
+          <strong>No data yet</strong>
+          <small>Seed demo data or collect observations to get started.</small>
+        {% endif %}
+      </section>
+
+      <section class="card caution">
+        <strong>Settlement caveat</strong>
+        <span>KSEA settlement source must be verified from market rules. Robinhood/Kalshi indications
+          are useful leads, but not authoritative for settlement.</span>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>Layer 3 · KSEA-area observations</h2>
+          <div class="list">
+            {% for obs in observations %}
+              <div class="row">
+                <div>
+                  <strong>{{ obs.station }}</strong>
+                  <small>{{ obs.source_name }} · {{ obs.observed_at }}</small>
+                  <small>
+                    Dew {{ obs.dew_point_f or "—" }}°F · wind {{ obs.wind_direction_deg or "—" }}°/{{ obs.wind_speed_mph or "—" }} mph ·
+                    pressure {{ obs.pressure_mb or "—" }} mb · ceiling {{ obs.cloud_ceiling_ft or "—" }} ft ·
+                    solar {{ obs.solar_radiation_wm2 or "—" }} W/m²
+                  </small>
+                </div>
+                <b>{{ "%.1f"|format(obs.temperature_f) }}°F</b>
+              </div>
+            {% else %}
+              <p class="empty">No observations found.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>Source freshness</h2>
+          <div class="list">
+            {% for source in sources %}
+              <div class="row">
+                <div>
+                  <strong>{{ source.name }}</strong>
+                  <small>{{ source.observation_count }} observations</small>
+                </div>
+                <b>{{ source.latest_observation_at or source.last_seen_at or "never" }}</b>
+              </div>
+            {% else %}
+              <p class="empty">No sources configured.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>Layer 1 · Forecast model runs + spread</h2>
+          {% if model_spread %}
+            <p class="pill">Spread {{ "%.1f"|format(model_spread.spread_f) }}°F across {{ model_spread.model_count }} models</p>
+          {% endif %}
+          <div class="list">
+            {% for run in model_runs %}
+              <div class="row">
+                <div>
+                  <strong>{{ run.model_name }} {{ run.model_cycle or "" }}</strong>
+                  <small>Run {{ run.run_at }} · valid {{ run.valid_date or run.target_date }}</small>
+                  <small>{{ run.probability_buckets or "Probability buckets pending" }}</small>
+                </div>
+                <b>{{ "%.1f"|format(run.predicted_high_f) if run.predicted_high_f is not none else "—" }}°F</b>
+              </div>
+            {% else %}
+              <p class="empty">No forecast model runs yet.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>Layer 2 · Marine layer/cloud signals</h2>
+          <div class="list">
+            {% for signal in marine_indicators %}
+              <div class="row">
+                <div>
+                  <strong>{{ signal.source_name or "Unknown source" }}</strong>
+                  <small>{{ signal.observed_at }} · cloud {{ signal.cloud_cover_pct or "—" }}% · ceiling {{ signal.ceiling_ft or "—" }} ft</small>
+                  <small>Cleared before 10 AM: {{ "yes" if signal.marine_layer_cleared_before_10am else "unknown/no" }} · {{ signal.satellite_trend or signal.notes }}</small>
+                </div>
+              </div>
+            {% else %}
+              <p class="empty">No marine-layer indicators yet.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>Layers 5–6 · Intraday/market probability buckets</h2>
+          <div class="list">
+            {% for snap in market_snapshots %}
+              <div class="row">
+                <div>
+                  <strong>{{ snap.temperature_bucket or snap.market_ticker }}</strong>
+                  <small>{{ snap.market_ticker }} · {{ snap.captured_at }}</small>
+                  <small>YES {{ snap.yes_bid_cents or "—" }}/{{ snap.yes_ask_cents or "—" }}¢ · NO {{ snap.no_bid_cents or "—" }}/{{ snap.no_ask_cents or "—" }}¢</small>
+                </div>
+                <b>{{ "%.1f"|format(snap.implied_probability * 100) if snap.implied_probability is not none else "—" }}%</b>
+              </div>
+            {% else %}
+              <p class="empty">No market snapshots yet.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>Audit events</h2>
+          <div class="list">
+            {% for event in events %}
+              <div class="row">
+                <div>
+                  <strong>{{ event.event_type }}</strong>
+                  <small>{{ event.created_at }} · {{ event.severity }} · stale={{ event.is_stale }}</small>
+                  <small>{{ event.message }}</small>
+                </div>
+              </div>
+            {% else %}
+              <p class="empty">No events yet.</p>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>
