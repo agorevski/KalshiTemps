@@ -4,12 +4,24 @@ This document is the honest gap list for Kalshi Temps. It describes what is miss
 
 ## Current product boundary
 
-The repository is currently best understood as a local demo and planning scaffold for temperature-market research. It can document a workflow, store or display demo-style records where supported by the app, and guide future data engineering. It is not yet a live, calibrated, authenticated, production decision system.
+The repository is currently best understood as a local demo plus an early, no-secret public ingestion foundation for temperature-market research. It can initialize a SQLite database, seed and display demo-style records, normalize selected public weather and placeholder model/market records, and collect public NWS Seattle forecast discussion text plus Aviation Weather METAR-style observations such as KSEA when explicitly run. It is not yet a scheduled, monitored, authenticated, calibrated, production decision system.
+
+Implemented in-repository foundations, based on current code and tests, include:
+
+- Public, no-secret collectors/CLI helpers for NWS Seattle forecast discussion text and Aviation Weather raw METAR observations, with injectable fetchers for tests.
+- Normalization for forecast discussions, METAR-like observations, model-high records, and market snapshots.
+- Stable provenance/hash fields for normalized records and collected raw/text payloads where supported.
+- SQLite tables and repository methods for forecast discussions, observations, model runs, model probability buckets, market snapshots, source metadata, app events, and dashboard summaries.
+- Deterministic observation, forecast, and source freshness quality validation for local records.
+- Mocked-network collector tests using injected fetchers rather than live network calls.
 
 Unless implemented elsewhere outside this repository and independently verified, assume the following are **not yet present**:
 
-- Live NOAA, NWS, METAR, Weather Underground, MADIS, satellite, model, or Kalshi ingestion.
+- Verified settlement-source workflow for each Kalshi market.
+- Scheduled, monitored, production live ingestion with retries, health checks, alerting, and backfill.
+- Live Kalshi market metadata, bid/ask, order-book, or authenticated feed ingestion.
 - Paid ECMWF access, licensed ECMWF archive access, or GraphCast/AI weather-model feeds.
+- Satellite/cloud feature ingestion or derived marine-layer feature pipeline.
 - Automated Kalshi order placement, portfolio management, or execution controls.
 - Authenticated multi-user dashboard access.
 - Production deployment, systemd service management, monitored backups, or production on-call runbooks.
@@ -19,17 +31,17 @@ Unless implemented elsewhere outside this repository and independently verified,
 
 ### Data ingestion gaps
 
-- **No verified live collectors yet**: the system should not claim current NOAA/Kalshi awareness until collectors exist, are scheduled, and are monitored.
-- **No live Kalshi price feed yet**: market-implied probabilities are conceptual until bid/ask/order-book ingestion is implemented and timestamped.
+- **Collector foundation is limited, not a live research pipeline**: NWS discussion and METAR collectors exist, but they are manually invoked, narrow in scope, and not scheduled, monitored, retried, backfilled, or tied to verified market rules.
+- **No live Kalshi price feed yet**: market-implied probabilities remain demo/placeholder records until permitted Kalshi metadata and bid/ask/order-book ingestion is implemented, timestamped, and audited.
 - **No paid model access**: ECMWF and GraphCast references are roadmap items unless a valid license, endpoint, and collector are configured.
-- **No NWS discussion scraper yet**: marine-layer and forecaster-text signals are not automatically extracted.
+- **NWS discussion text is collected, not feature-extracted**: marine-layer and forecaster-text signals are not yet automatically parsed into regime features.
 - **No satellite/cloud feature pipeline yet**: morning stratus, fog, and burn-off timing are not currently quantified.
 - **No historical backfill yet**: there is not enough normalized history to train bias tables or probability calibration.
 
 ### Settlement and source risks
 
 - **Settlement source must be verified per market**: every Kalshi contract can differ by source, station, product, fallback, rounding, correction policy, and local-day cutoff.
-- **KSEA is not automatically authoritative**: Weather Underground/KSEA or NOAA/KSEA claims must be checked against the exact market rule before analysis is treated as actionable.
+- **KSEA is not automatically authoritative**: Weather Underground/KSEA, NOAA/KSEA, METAR/KSEA, or Aviation Weather/KSEA claims must be checked against the exact market rule before analysis is treated as actionable.
 - **Station/source mismatch can dominate edge**: METAR, NWS climate products, Weather Underground summaries, nearby ASOS/AWOS, and PWS records may disagree by enough to change a bucket.
 - **Rounding and daily-max definitions matter**: hourly METAR values may miss between-report extremes; climate summaries may revise; local-day boundaries and DST handling must match settlement text.
 - **Fallback and correction behavior must be captured**: late corrections, outages, fallback stations, and official revisions can change the final result after an early read.
@@ -39,10 +51,11 @@ Unless implemented elsewhere outside this repository and independently verified,
 - Demo or seed rows are useful for UI development only.
 - Demo records may not reflect real latency, missingness, QC flags, station metadata, model spread, market microstructure, or official settlement behavior.
 - Demo-derived charts must be labeled clearly so they are not confused with live observations, live market prices, or backtested accuracy.
-- Demo data must not be mixed with live research records without a durable `is_demo`/environment/provenance flag.
+- Demo data must not be mixed with live research records without durable environment/provenance separation and user-visible labels.
 
 ### Observation and forecast quality risks
 
+- **Deterministic validators exist but are not full QC**: current validation covers required fields, freshness, plausible ranges, future/stale timestamps, duplicate hints, frozen-temperature hints, and forecast provenance warnings. It does not replace official QC flags, station metadata, or source-specific quality controls.
 - **Latency risk**: observation feeds, model files, market data, and official settlement sources can arrive late or out of order.
 - **Revision risk**: official data and third-party summaries may be corrected after first publication.
 - **QC risk**: outages, frozen sensors, maintenance, station relocation, bad timestamps, or unit conversion errors can create false confidence.
@@ -72,27 +85,39 @@ Unless implemented elsewhere outside this repository and independently verified,
 ### Current gaps
 
 - No end-to-end validation that a market can be discovered, verified, ingested, analyzed, displayed, audited, and reconciled against official settlement.
-- No known fixture suite covering real NOAA/NWS/METAR/Kalshi payload variations, missing fields, corrections, out-of-order records, daylight-saving transitions, or unit conversions.
+- No broad recorded-payload fixture suite covering real NOAA/NWS/METAR/Kalshi variations, missing fields, corrections, out-of-order records, daylight-saving transitions, or unit conversions. Current collector tests use small mocked text payloads.
+- No live-network validation should be assumed from tests; network behavior is exercised through injected fetchers/mocks, not external services.
 - No validated station-metadata layer for distance, elevation, source class, water exposure, and station changes.
 - No benchmark showing forecast error by model, regime, bucket, or time of day.
 - No calibration report proving probability outputs are reliable out of sample.
 - No dashboard security tests for authentication, authorization, session handling, or accidental exposure.
 - No operational tests for scheduler failures, retry behavior, database locks, backups, restore, or disk-full conditions.
 
+### Implemented component test coverage
+
+Current tests account for several local foundations:
+
+- Forecast discussion normalization stores product, issued time, source URL, text, and deterministic hash fields.
+- METAR-like observation normalization extracts station, timestamp, temperature, dew point, wind, pressure, ceiling, source URL, and hash fields.
+- NWS discussion and METAR collector tests use injected fetchers and verify provenance/hash fields and persistence without live network calls.
+- Model-high and market snapshot normalization tests cover required fields, provenance hashes, implied probability, and invalid-price handling.
+- SQLite repository/integration tests cover seeded and empty flows plus persistence for forecast discussions, observations, model records, and market snapshots.
+- Quality tests cover deterministic observation, forecast, and source-freshness validation statuses.
+
 ### Isolated component test strategy
 
-Each component should be testable without live network access:
+Each component should remain testable without live network access:
 
 1. **Market-rule parser and verifier**
    - Fixtures for settlement text, station names, products, rounding, fallback rules, and correction language.
    - Tests that unverified or ambiguous rules block actionable output.
 2. **Source collectors**
-   - Recorded payload fixtures for NOAA/NWS, METAR, model files, satellite metadata, and Kalshi markets.
+   - Expand recorded payload fixtures for NOAA/NWS, METAR, model files, satellite metadata, and Kalshi markets.
    - Tests for missing fields, stale timestamps, HTTP errors, retries, rate limits, schema changes, and source-specific terms metadata.
 3. **Normalization and provenance**
-   - Tests for unit conversion, local/UTC timestamps, DST boundaries, raw payload hashing, duplicate handling, and immutable audit records.
+   - Continue testing unit conversion, local/UTC timestamps, DST boundaries, raw payload hashing, duplicate handling, and immutable audit records.
 4. **Observation QC**
-   - Tests for frozen sensors, implausible jumps, stale reports, source mismatch, missing QC flags, and proxy-station downgrades.
+   - Expand tests for official QC flags, station metadata, frozen sensors, implausible jumps, stale reports, source mismatch, missing QC flags, and proxy-station downgrades.
 5. **Feature generation**
    - Tests for intraday max, warming rate, model spread, marine-layer flags, NWS-discussion keyword extraction, and satellite/cloud derived fields.
 6. **Bias tables and calibration**
@@ -121,15 +146,15 @@ A fully integrated test should run in staged modes:
 
 - Add a market-rule verification workflow that stores ticker, title, settlement source, station/product, rounding, cutoff, fallback, correction policy, and reviewer timestamp.
 - Add UI/API guards that mark unverified markets as `not_actionable_pending_rule_verification`.
-- Label demo, replay, paper-live, and live records everywhere.
+- Label demo, replay, manually collected live, paper-live, and production-live records everywhere.
 - Add source freshness, source mismatch, and PWS low-trust warnings.
 
 ### P1: Real data collectors
 
-- Implement NOAA/NWS observation and climate-product collectors for the verified settlement source.
-- Implement METAR/KSEA and nearby ASOS/AWOS collectors with station metadata.
+- Productionize the existing public NWS discussion and Aviation Weather METAR collector foundation with scheduling, retries, rate-limit handling, payload hashing, latency metrics, and collector health checks.
+- Add NOAA/NWS observation and climate-product collectors for the verified settlement source.
+- Extend METAR/KSEA and nearby ASOS/AWOS collection with station metadata and source-specific quality flags.
 - Implement Kalshi market metadata and bid/ask/order-book ingestion where permitted.
-- Add scheduler, retries, rate-limit handling, payload hashing, latency metrics, and collector health checks.
 - Preserve raw payloads or hashes plus normalized rows for auditability.
 
 ### P2: Model forecast ingestion
@@ -141,7 +166,7 @@ A fully integrated test should run in staged modes:
 
 ### P3: Weather-regime context
 
-- Build an NWS forecast discussion scraper/parser for marine layer, stratus, fog, offshore flow, heat, wind shift, and persistent-cloud language.
+- Extend collected NWS forecast discussion text into a parser for marine layer, stratus, fog, offshore flow, heat, wind shift, and persistent-cloud language.
 - Add satellite/cloud feature extraction for morning cloud cover, Puget Sound stratus extent, fog presence, and burn-off timing.
 - Add sunrise, solar angle, dew point, wind, pressure, and cloud ceiling features for 7 AM, 9 AM, and 11 AM snapshots.
 
@@ -179,8 +204,8 @@ A fully integrated test should run in staged modes:
 ### P8: UX refinements
 
 - Improve mobile dashboard layout for quick source freshness, verified station, current high, bucket probabilities, and caveats.
-- Add clear status chips: demo/live, rule verified/unverified, stale/fresh, source match/mismatch, calibrated/uncalibrated.
-- Add drill-down pages for raw observations, model runs, market prices, hypotheses, and official outcome reconciliation.
+- Add clear status chips: demo/manual-live/paper-live/production-live, rule verified/unverified, stale/fresh, source match/mismatch, calibrated/uncalibrated.
+- Add drill-down pages for raw observations, forecast discussions, model runs, market prices, hypotheses, and official outcome reconciliation.
 - Add exportable daily research reports with provenance and caveats.
 
 ### P9: Compliance controls and optional trading-adjacent tooling
@@ -199,18 +224,29 @@ The product is fully working as a local demo when:
 - A developer can initialize the database, seed demo data, start the local app, and view the dashboard without external services.
 - Demo data is unmistakably labeled and cannot be mistaken for live market or weather data.
 - The dashboard shows source/provenance placeholders, caveats, and unverified-market warnings.
-- Documentation clearly states that live ingestion, model calibration, authentication, and automated trading are not present.
+- Documentation clearly states that live research ingestion, model calibration, authentication, and automated trading are not present.
 - Basic smoke tests or documented manual checks confirm the app starts, routes load, and demo records render.
 - No financial recommendation, guaranteed arbitrage language, or automated action is presented.
 
+### Phase 1.5: Live collector foundation
+
+The collector foundation is present, but not yet a complete live research tool, when:
+
+- Public NWS discussion and Aviation Weather METAR collectors can be run manually without secrets.
+- Collected NWS/METAR records are normalized, timestamped, hashed, and persisted to SQLite with source/provenance metadata.
+- Model-high and market-snapshot placeholder records can be normalized and persisted for local research scaffolding, without claiming live model or Kalshi coverage.
+- Deterministic observation, forecast, and source-freshness validation reports are available for local records.
+- Collector and persistence tests use mocked/injected network responses and do not require live external services.
+- Documentation and UI language distinguish demo data, manually collected public weather data, placeholder records, and unresolved live research requirements.
+
 ### Phase 2: Live research product
 
-The product is fully working as a live research tool when:
+The product is fully working as a live research tool only when:
 
 - Each tracked market has verified settlement source, station/product, units, rounding, cutoff, fallback, and correction policy.
 - Live collectors ingest verified official-source observations, relevant proxy observations, model guidance, and Kalshi market data with timestamps and provenance.
 - Collector health, latency, retry behavior, stale-data flags, and source mismatch warnings are visible.
-- Demo/replay/live records are separated in storage and UI.
+- Demo/replay/manual-live/paper-live records are separated in storage and UI.
 - Raw payloads or hashes, normalized rows, and audit logs support reproducibility.
 - The system can run in paper-live mode for multiple weeks and reconcile hypotheses against official outcomes.
 - Users still make independent decisions; the product remains research support, not trading advice.
