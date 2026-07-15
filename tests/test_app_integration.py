@@ -428,6 +428,13 @@ def test_new_app_endpoints_return_expected_shapes(monkeypatch) -> None:
             collector_health_response = client.get("/api/collector/health?limit=2")
             weather_features_response = client.get("/api/weather/features?limit=2")
             calibration_response = client.get("/api/calibration/summary?limit=2")
+            paper_live_response = client.get("/api/paper-live/runs")
+            paper_live_status_response = client.get("/api/paper-live/status")
+            official_response = client.get("/api/official/observations?limit=2&station_limit=2")
+            adapters_response = client.get("/api/model/adapters?limit=2")
+            settlement_response = client.get("/api/settlement/replays?limit=2")
+            nowcast_response = client.get("/api/nowcast/signals?limit=2")
+            backfill_response = client.get("/api/backfill/reports?limit=2")
             dashboard_response = client.get("/dashboard")
 
         assert root_response.status_code in {307, 308}
@@ -451,6 +458,13 @@ def test_new_app_endpoints_return_expected_shapes(monkeypatch) -> None:
         assert collector_health_response.status_code == 200
         assert weather_features_response.status_code == 200
         assert calibration_response.status_code == 200
+        assert paper_live_response.status_code == 200
+        assert paper_live_status_response.status_code == 200
+        assert official_response.status_code == 200
+        assert adapters_response.status_code == 200
+        assert settlement_response.status_code == 200
+        assert nowcast_response.status_code == 200
+        assert backfill_response.status_code == 200
         assert dashboard_response.status_code == 200
 
         fusion = fusion_response.json()["summary"]
@@ -473,8 +487,16 @@ def test_new_app_endpoints_return_expected_shapes(monkeypatch) -> None:
         assert {"collector_health", "collector_runs"} <= set(collector_health_response.json())
         assert {"weather_regime_features", "intraday_features"} <= set(weather_features_response.json())
         assert {"official_outcomes", "prediction_snapshots", "bias_summaries", "calibration_metrics"} <= set(calibration_response.json())
+        assert {"paper_live_runs", "readiness"} <= set(paper_live_response.json())
+        assert {"paper_live_status", "ops"} <= set(paper_live_status_response.json())
+        assert {"station_metadata", "official_observations"} <= set(official_response.json())
+        assert {"model_runs", "model_extraction_metadata", "model_run_deltas", "latest_model_spread"} <= set(adapters_response.json())
+        assert {"settlement_replay_summary", "settlement_replays"} <= set(settlement_response.json())
+        assert {"cloud_features", "nowcast_snapshots", "marine_indicators", "intraday_features"} <= set(nowcast_response.json())
+        assert {"backfill_runs", "bias_summaries", "calibration_metrics"} <= set(backfill_response.json())
         assert "Research workflow" in dashboard_response.text
         assert "No financial advice" in dashboard_response.text
+        assert "not production calibrated" in dashboard_response.text
     finally:
         db_path.unlink(missing_ok=True)
 
@@ -517,6 +539,53 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
                     "source_url": "https://example.test/rules",
                 }
             )
+            repo.upsert_station_metadata(
+                {
+                    "station_id": "KSEA",
+                    "name": "Seattle-Tacoma International Airport",
+                    "network": "ASOS",
+                    "latitude": 47.45,
+                    "longitude": -122.31,
+                    "source_class": "official",
+                    "water_exposure": "puget_sound",
+                }
+            )
+            repo.save_official_observation_record(
+                "NOAA ASOS",
+                {
+                    "station": "KSEA",
+                    "observed_at": "2026-07-14T18:00:00+00:00",
+                    "temperature_f": 72.0,
+                    "dew_point_f": 52.0,
+                    "source_url": "https://example.test/metar",
+                    "raw_payload_hash": "official-obs",
+                },
+            )
+            repo.save_model_high_record(
+                {
+                    "run_at": "2026-07-14T06:00:00+00:00",
+                    "model_name": "HRRR",
+                    "model_cycle": "06z",
+                    "target_date": "2026-07-14",
+                    "valid_date": "2026-07-14",
+                    "predicted_high_f": 74.0,
+                    "extraction_station": "KSEA",
+                    "raw_payload_hash": "hrrr-06",
+                }
+            )
+            repo.save_model_high_record(
+                {
+                    "run_at": "2026-07-14T12:00:00+00:00",
+                    "model_name": "HRRR",
+                    "model_cycle": "12z",
+                    "target_date": "2026-07-14",
+                    "valid_date": "2026-07-14",
+                    "predicted_high_f": 76.0,
+                    "extraction_station": "KSEA",
+                    "raw_payload_hash": "hrrr-12",
+                }
+            )
+            repo.recalculate_model_spread("2026-07-14")
             discussion = repo.save_forecast_discussion(
                 "Fixture Discussion",
                 {
@@ -554,11 +623,61 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
                     "marine_layer_cleared_before_10am": True,
                 }
             )
+            repo.save_cloud_feature(
+                {
+                    "source": "GOES-West visible",
+                    "observed_at": "2026-07-14T18:10:00+00:00",
+                    "cloud_cover_pct": 30.0,
+                    "stratus_extent_pct": 20.0,
+                    "burnoff_status": "cleared",
+                    "source_hash": "cloud-1",
+                }
+            )
+            repo.save_nowcast_snapshot(
+                {
+                    "station": "KSEA",
+                    "snapshot_at": "2026-07-14T18:15:00+00:00",
+                    "local_snapshot_time": "2026-07-14 11:15 PDT",
+                    "target_date": "2026-07-14",
+                    "snapshot_hour_local": 11,
+                    "current_temp_f": 72.0,
+                    "intraday_max_f": 75.5,
+                    "warming_rate_f_per_hour": 1.2,
+                    "cloud_trend": "clearing",
+                    "marine_push_indicator": "weak",
+                    "remaining_upside_distribution": {"p50": 2.0},
+                    "data_status": "fixture",
+                }
+            )
             repo.save_official_outcome(
                 station="KSEA",
                 target_date="2026-07-14",
                 high_temperature_f=75.5,
                 source_name="NOAA ASOS",
+            )
+            outcome = repo.get_official_outcome(station="KSEA", target_date="2026-07-14")
+            assert outcome is not None
+            repo.save_settlement_replay(
+                {
+                    "ticker": "DEMO-KSEA-HIGH",
+                    "target_date": "2026-07-14",
+                    "official_outcome_id": outcome["id"],
+                    "status": "matched",
+                    "settlement_bucket": "75-76°F",
+                    "bucket_matched": True,
+                    "mismatch_reasons": [],
+                    "official_value": 75.5,
+                    "official_units": "fahrenheit",
+                    "normalized_value": 75.5,
+                    "rounded_value": 75.5,
+                    "evaluation_units": "fahrenheit",
+                    "official_source_name": "NOAA ASOS",
+                    "raw_payload_hash": "settlement-1",
+                    "replayed_at": "2026-07-14T23:00:00+00:00",
+                    "rule_version": "test",
+                    "market_rule_verified": True,
+                },
+                outcome,
             )
             repo.save_prediction_snapshot(
                 {
@@ -582,11 +701,24 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
             )
             repo.compute_bias_summaries()
             repo.compute_calibration_metrics()
+            backfill = repo.start_backfill_run(source_path="fixtures/demo", source_hash="backfill-1")
+            repo.finish_backfill_run(
+                backfill["id"],
+                status="success",
+                counts={"observations_imported": 1},
+                errors=[],
+            )
 
         with TestClient(app) as client:
             market = client.get("/api/market/verification?ticker=DEMO-KSEA-HIGH").json()
             collector = client.get("/api/collector/health?max_age_minutes=10000000").json()
             features = client.get("/api/weather/features").json()
+            official = client.get("/api/official/observations").json()
+            adapters = client.get("/api/model/adapters").json()
+            settlement = client.get("/api/settlement/replays").json()
+            nowcast = client.get("/api/nowcast/signals").json()
+            backfill = client.get("/api/backfill/reports").json()
+            paper_status = client.get("/api/paper-live/status").json()
             calibration = client.get("/api/calibration/summary").json()
             dashboard = client.get("/dashboard")
 
@@ -594,13 +726,24 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
         assert collector["collector_health"][0]["collector_name"] == "metar"
         assert features["latest_weather_regime_features"]["regime_tags"] == ["marine_layer", "burn_off_timing"]
         assert features["latest_intraday_features"]["marine_layer_cleared_before_10am"] is True
+        assert official["station_metadata"][0]["station_id"] == "KSEA"
+        assert official["official_observations"][0]["qc_status"] in {"pass", "warn"}
+        assert adapters["model_extraction_metadata"]
+        assert adapters["model_run_deltas"][0]["change_f"] == 2.0
+        assert settlement["settlement_replay_summary"]["matched_count"] == 1
+        assert nowcast["cloud_features"][0]["burnoff_status"] == "cleared"
+        assert nowcast["nowcast_snapshots"][0]["station"] == "KSEA"
+        assert backfill["backfill_runs"][0]["status"] == "success"
+        assert "readiness" in paper_status["paper_live_status"]
         assert calibration["bias_summaries"][0]["sample_count"] == 1
         assert calibration["calibration_metrics"][0]["sample_count"] == 1
         assert dashboard.status_code == 200
         assert "Market verification/actionability" in dashboard.text
-        assert "Collector health/staleness" in dashboard.text
-        assert "Regimes and intraday signals" in dashboard.text
-        assert "Historical bias, calibration, outcomes" in dashboard.text
+        assert "Collector health/staleness and station QC" in dashboard.text
+        assert "Model adapter alignment" in dashboard.text
+        assert "Regimes, marine/cloud, and nowcast snapshots" in dashboard.text
+        assert "Backfill reports, historical bias, calibration, outcomes" in dashboard.text
+        assert "Replay verification and reconciliation" in dashboard.text
     finally:
         db_path.unlink(missing_ok=True)
 
@@ -618,12 +761,43 @@ def test_dashboard_renders_without_data(monkeypatch) -> None:
         assert "No forecast model runs yet." in dashboard_response.text
         assert "No market snapshots yet." in dashboard_response.text
         assert "No sources configured" in dashboard_response.text
+        assert "No settlement replays yet. Settlement verification is required." in dashboard_response.text
+        assert "No official observation QC yet" in dashboard_response.text
+        assert "Awaiting comparable model runs" in dashboard_response.text
         summary = fusion_response.json()["summary"]
         assert summary["daily_high"] is None
         assert summary["model_spread"] is None
         assert summary["source_freshness"] == []
         assert summary["bucket_deltas"] == []
         assert summary["product_status"]["source_count"] == 0
+    finally:
+        db_path.unlink(missing_ok=True)
+
+
+def test_access_gate_open_when_token_unset_and_required_when_set(monkeypatch) -> None:
+    db_path = _project_temp_db(monkeypatch)
+    try:
+        initialize_database(str(db_path))
+
+        monkeypatch.delenv("KALSHI_TEMPS_ACCESS_TOKEN", raising=False)
+        with TestClient(app) as client:
+            open_response = client.get("/api/ops/status")
+        assert open_response.status_code == 200
+        assert open_response.json()["ops"]["access"]["auth"]["required"] is False
+        assert "warning" in open_response.json()["ops"]["access"]["auth"]
+
+        monkeypatch.setenv("KALSHI_TEMPS_ACCESS_TOKEN", "local-secret-token")
+        with TestClient(app) as client:
+            unauthorized = client.get("/api/ops/status")
+            authorized = client.get("/api/ops/status", headers={"Authorization": "Bearer local-secret-token"})
+            dashboard_unauthorized = client.get("/dashboard")
+
+        assert unauthorized.status_code == 401
+        assert "local-secret-token" not in unauthorized.text
+        assert authorized.status_code == 200
+        assert "local-secret-token" not in authorized.text
+        assert authorized.json()["ops"]["access"]["auth"]["required"] is True
+        assert dashboard_unauthorized.status_code == 401
     finally:
         db_path.unlink(missing_ok=True)
 

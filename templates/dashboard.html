@@ -29,7 +29,7 @@
         <article class="card caution">
           <span class="section-label">Caveats</span>
           <strong>No financial advice · no automated trading</strong>
-          <span>This dashboard is a research surface only. Verify official market rules and settlement sources before using any probability evidence.</span>
+          <span>This dashboard is not production calibrated. Verify official market rules and settlement sources before using any probability evidence.</span>
         </article>
       </section>
 
@@ -67,9 +67,48 @@
           <div class="workflow-step active">
             <span>6</span>
             <strong>Ops/access posture</strong>
-            <small><a href="/api/ops/status">Open ops status JSON</a></small>
+            <small><a href="/api/ops/status">Open ops status JSON</a> · auth {{ ops.access.auth.mode if ops else 'unknown' }}</small>
           </div>
         </div>
+      </section>
+
+      <section class="precision-grid" aria-label="Precision workflow summaries">
+        <article class="card compact-card precision-card">
+          <span class="section-label">Precision · settlement replay</span>
+          <strong>{{ settlement_summary.replay_count if settlement_summary else 0 }} replay checks</strong>
+          <small>{{ settlement_summary.matched_count if settlement_summary else 0 }} matched · {{ settlement_summary.review_count if settlement_summary else 0 }} require review</small>
+          <small><a href="/api/settlement/replays">Settlement verification JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">Official source/station QC</span>
+          <strong>{{ station_metadata|length }} stations · {{ official_observations|length }} official obs</strong>
+          <small>{% if official_observations %}Latest QC {{ official_observations[0].qc_status or 'unknown' }} · {{ official_observations[0].station }}{% else %}No official observation QC yet{% endif %}</small>
+          <small><a href="/api/official/observations">Station metadata JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">Model adapter alignment</span>
+          <strong>{{ model_extractions|length }} extractions · {{ model_run_deltas|length }} deltas</strong>
+          <small>{% if model_run_deltas %}Latest {{ model_run_deltas[0].model_name }} {{ "%+.1f"|format(model_run_deltas[0].change_f) }}°F{% else %}Awaiting comparable model runs{% endif %}</small>
+          <small><a href="/api/model/adapters">Adapter metadata JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">Marine/cloud + nowcast</span>
+          <strong>{{ cloud_features|length }} cloud · {{ nowcast_snapshots|length }} nowcasts</strong>
+          <small>{% if nowcast_snapshots %}Latest {{ nowcast_snapshots[0].station or 'station' }} at {{ nowcast_snapshots[0].local_snapshot_time }}{% elif cloud_features %}Cloud {{ cloud_features[0].burnoff_status or 'status pending' }}{% else %}No nowcast snapshot yet{% endif %}</small>
+          <small><a href="/api/nowcast/signals">Nowcast signal JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">Backfill/calibration reports</span>
+          <strong>{{ backfill_runs|length }} backfills · {{ calibration_metrics|length }} calibration rows</strong>
+          <small>{% if backfill_runs %}Latest {{ backfill_runs[0].status }} · {{ backfill_runs[0].started_at }}{% else %}No backfill report yet{% endif %}</small>
+          <small><a href="/api/backfill/reports">Backfill report JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">Paper-live/auth posture</span>
+          <strong>{{ paper_live_runs|selectattr('status', 'equalto', 'active')|list|length }} active · auth {{ ops.access.auth.mode if ops else 'unknown' }}</strong>
+          <small>Paper-live is observation-only; no automated betting is performed.</small>
+          <small><a href="/api/paper-live/status">Paper-live status JSON</a></small>
+        </article>
       </section>
 
       <section class="status-grid" aria-label="Status overview">
@@ -91,10 +130,23 @@
           {% if ops %}
             <strong>Database {{ 'ok' if ops.database.ok else 'needs review' }}</strong>
             <small>Disk {{ 'ok' if ops.disk.ok else 'low space' }} · access {{ ops.access.posture }}</small>
+            <small>{{ ops.access.auth.warning or ('Access gate: ' ~ ops.access.auth.mode) }}</small>
             <small><a href="/api/ops/status">View sanitized ops endpoint</a></small>
           {% else %}
             <strong>No ops status available</strong>
             <small>Use /api/ops/status when the service is running.</small>
+          {% endif %}
+        </article>
+
+        <article class="card compact-card">
+          <span class="section-label">Paper-live operations</span>
+          {% if paper_live_runs %}
+            <strong>{{ paper_live_runs|selectattr('status', 'equalto', 'active')|list|length }} active / {{ paper_live_runs|length }} recent runs</strong>
+            <small>Paper-live records are operational notes only; no automated betting is performed.</small>
+            <small><a href="/api/paper-live/runs?include_closed=true">View run JSON</a></small>
+          {% else %}
+            <strong>No paper-live run</strong>
+            <small>Use the CLI to start a paper-live soak run before relying on run status.</small>
           {% endif %}
         </article>
       </section>
@@ -130,9 +182,29 @@
         <article class="card feature-card">
           <div class="section-heading">
             <span class="section-label">2 · Collectors</span>
-            <h2>Collector health/staleness</h2>
+            <h2>Collector health/staleness and station QC</h2>
           </div>
           <div class="list">
+            {% for station in station_metadata %}
+              <div class="row freshness-row">
+                <div>
+                  <strong>{{ station.station_id }} · {{ station.network or 'network unknown' }}</strong>
+                  <small>{{ station.name or 'station name unavailable' }} · class {{ station.source_class or 'unclassified' }}</small>
+                  <small>Exposure {{ station.water_exposure or 'unknown' }} · metadata {{ station.metadata_hash[:10] if station.metadata_hash else 'unhashed' }}</small>
+                </div>
+                <span class="badge neutral">station QC</span>
+              </div>
+            {% endfor %}
+            {% for obs in official_observations %}
+              <div class="row freshness-row">
+                <div>
+                  <strong>{{ obs.station }} official observation</strong>
+                  <small>{{ obs.source_name or 'official source' }} · {{ obs.observed_at }}</small>
+                  <small>QC {{ obs.qc_status or 'unknown' }} · {{ obs.station_name or 'metadata pending' }}</small>
+                </div>
+                <span class="badge {{ 'good' if obs.qc_status == 'pass' else 'neutral' }}">{{ obs.qc_status or 'qc' }}</span>
+              </div>
+            {% endfor %}
             {% for item in collector_health %}
               <div class="row freshness-row">
                 <div>
@@ -160,6 +232,26 @@
             <p class="pill muted-pill">Spread pending</p>
           {% endif %}
           <div class="list">
+            {% for extraction in model_extractions %}
+              <div class="row model-row">
+                <div>
+                  <strong>{{ extraction.model_name }} extraction</strong>
+                  <small>{{ extraction.extraction_station or extraction.extraction_gridpoint or 'point metadata pending' }} · run {{ extraction.run_at }}</small>
+                  <small>Target {{ extraction.target_date }} · hash {{ extraction.metadata.raw_payload_hash[:10] if extraction.metadata.raw_payload_hash else 'unhashed' }}</small>
+                </div>
+                <span class="badge neutral">adapter</span>
+              </div>
+            {% endfor %}
+            {% for delta in model_run_deltas %}
+              <div class="row delta-row">
+                <div>
+                  <strong>{{ delta.model_name }} run delta</strong>
+                  <small>{{ delta.previous_run_at or 'prior run' }} → {{ delta.run_at }}</small>
+                  <small>{{ delta.previous_predicted_high_f if delta.previous_predicted_high_f is not none else '—' }}°F → {{ delta.predicted_high_f if delta.predicted_high_f is not none else '—' }}°F</small>
+                </div>
+                <b>{{ "%+.1f"|format(delta.change_f) if delta.change_f is not none else "—" }}°F</b>
+              </div>
+            {% endfor %}
             {% for run in model_runs %}
               <div class="row model-row">
                 <div>
@@ -188,9 +280,29 @@
         <article class="card feature-card">
           <div class="section-heading">
             <span class="section-label">4 · Weather features</span>
-            <h2>Regimes and intraday signals</h2>
+            <h2>Regimes, marine/cloud, and nowcast snapshots</h2>
           </div>
           <div class="list">
+            {% for nowcast in nowcast_snapshots %}
+              <div class="row signal-row">
+                <div>
+                  <strong>{{ nowcast.station or 'station unknown' }} nowcast</strong>
+                  <small>{{ nowcast.local_snapshot_time }} · max {{ nowcast.intraday_max_f if nowcast.intraday_max_f is not none else '—' }}°F · upside {{ nowcast.remaining_upside_distribution or 'pending' }}</small>
+                  <small>Cloud {{ nowcast.cloud_trend or 'unavailable' }} · marine push {{ nowcast.marine_push_indicator or 'unavailable' }}</small>
+                </div>
+                <span class="badge neutral">nowcast</span>
+              </div>
+            {% endfor %}
+            {% for cloud in cloud_features %}
+              <div class="row signal-row">
+                <div>
+                  <strong>{{ cloud.source }} cloud feature</strong>
+                  <small>{{ cloud.observed_at }} · cover {{ cloud.cloud_cover_pct if cloud.cloud_cover_pct is not none else '—' }}% · stratus {{ cloud.stratus_extent_pct if cloud.stratus_extent_pct is not none else '—' }}%</small>
+                  <small>{{ cloud.burnoff_status or cloud.notes or 'Burnoff status pending' }}</small>
+                </div>
+                <span class="badge {{ 'good' if cloud.burnoff_status == 'cleared' else 'neutral' }}">cloud</span>
+              </div>
+            {% endfor %}
             {% for feature in weather_regime_features %}
               <div class="row signal-row">
                 <div>
@@ -229,9 +341,19 @@
         <article class="card feature-card">
           <div class="section-heading">
             <span class="section-label">5 · Calibration</span>
-            <h2>Historical bias, calibration, outcomes</h2>
+            <h2>Backfill reports, historical bias, calibration, outcomes</h2>
           </div>
           <div class="list">
+            {% for run in backfill_runs %}
+              <div class="row">
+                <div>
+                  <strong>Backfill {{ run.status }}</strong>
+                  <small>{{ run.source_path }} · {{ run.started_at }}</small>
+                  <small>Counts {{ run.counts }} · errors {{ run.errors|length }}</small>
+                </div>
+                <span class="badge {{ 'good' if run.status == 'success' else 'neutral' }}">{{ run.status }}</span>
+              </div>
+            {% endfor %}
             {% for bias in bias_summaries %}
               <div class="row">
                 <div>
@@ -263,6 +385,30 @@
               </div>
             {% else %}
               {% if not bias_summaries and not calibration_metrics %}<p class="empty">No historical outcomes or calibration metrics yet.</p>{% endif %}
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card feature-card">
+          <div class="section-heading">
+            <span class="section-label">Settlement replay</span>
+            <h2>Replay verification and reconciliation</h2>
+          </div>
+          {% if settlement_summary %}
+            <p class="pill {{ 'warning-pill' if settlement_summary.settlement_verification_required else 'good-pill' }}">{{ settlement_summary.replay_count }} replay checks · verification {{ 'required' if settlement_summary.settlement_verification_required else 'clear' }}</p>
+          {% endif %}
+          <div class="list">
+            {% for replay in settlement_replays %}
+              <div class="row">
+                <div>
+                  <strong>{{ replay.ticker }} · {{ replay.target_date }}</strong>
+                  <small>{{ replay.official_source_name or 'official source unknown' }} · replayed {{ replay.replayed_at }}</small>
+                  <small>{{ replay.mismatch_reasons|join(', ') if replay.mismatch_reasons else 'No mismatch reasons recorded' }}</small>
+                </div>
+                <span class="badge {{ 'good' if replay.bucket_matched else 'bad' }}">{{ replay.status }}</span>
+              </div>
+            {% else %}
+              <p class="empty">No settlement replays yet. Settlement verification is required.</p>
             {% endfor %}
           </div>
         </article>

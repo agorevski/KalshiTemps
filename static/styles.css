@@ -47,6 +47,8 @@ h2 { margin: 2px 0 0; font-size: clamp(1.15rem, 4vw, 1.55rem); line-height: 1.1;
 .workflow-step strong { line-height: 1.1; }
 .workflow-step.placeholder { background: #fafafa; color: #475467; border-style: dashed; }
 .workflow-step.placeholder span { background: #98a2b3; }
+.precision-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.precision-card { margin-bottom: 0; background: linear-gradient(180deg, #fff, #f8fbff); }
 
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .feature-card { margin-bottom: 0; }
@@ -81,6 +83,7 @@ small { color: var(--muted); display: block; margin-top: 4px; line-height: 1.35;
 
 @media (max-width: 900px) {
   .topline, .status-grid, .grid { grid-template-columns: 1fr; }
+  .precision-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workflow-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -88,6 +91,7 @@ small { color: var(--muted); display: block; margin-top: 4px; line-height: 1.35;
   .shell { padding: 12px; }
   .hero { padding-top: 16px; }
   .card { border-radius: 17px; padding: 14px; margin-bottom: 12px; }
+  .precision-grid { grid-template-columns: 1fr; gap: 10px; margin-bottom: 12px; }
   .workflow-grid { grid-template-columns: 1fr; gap: 9px; }
   .workflow-step { min-height: auto; grid-template-columns: auto 1fr; column-gap: 10px; }
   .workflow-step small { grid-column: 2; }
