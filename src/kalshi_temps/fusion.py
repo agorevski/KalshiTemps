@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,17 @@ class ModelSpread:
     model_count: int
     min_model_name: str | None = None
     max_model_name: str | None = None
+
+
+@dataclass(frozen=True)
+class ModelRunChange:
+    model_name: str
+    target_date: str
+    run_at: str
+    previous_run_at: str
+    predicted_high_f: float
+    previous_predicted_high_f: float
+    change_f: float
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,47 @@ def compute_model_spread(
         min_model_name=min_forecast.model_name,
         max_model_name=max_forecast.model_name,
     )
+
+
+def compute_model_run_changes(runs: Iterable[Mapping[str, Any]]) -> list[ModelRunChange]:
+    """Return latest-vs-previous high-temperature changes per model and target date."""
+    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for run in runs:
+        model_name = str(run.get("model_name") or "").strip()
+        target_date = str(run.get("target_date") or run.get("valid_date") or "").strip()
+        run_at = str(run.get("run_at") or "").strip()
+        high = run.get("predicted_high_f", run.get("high_f"))
+        if not model_name or not target_date or not run_at or high is None:
+            continue
+        try:
+            parsed_high = float(high)
+        except (TypeError, ValueError):
+            continue
+        if parsed_high != parsed_high:
+            continue
+        grouped.setdefault((model_name, target_date), []).append({**run, "predicted_high_f": parsed_high})
+
+    changes: list[ModelRunChange] = []
+    for (model_name, target_date), group in grouped.items():
+        ordered = sorted(group, key=lambda item: str(item.get("run_at") or ""))
+        if len(ordered) < 2:
+            continue
+        previous = ordered[-2]
+        latest = ordered[-1]
+        latest_high = float(latest["predicted_high_f"])
+        previous_high = float(previous["predicted_high_f"])
+        changes.append(
+            ModelRunChange(
+                model_name=model_name,
+                target_date=target_date,
+                run_at=str(latest["run_at"]),
+                previous_run_at=str(previous["run_at"]),
+                predicted_high_f=latest_high,
+                previous_predicted_high_f=previous_high,
+                change_f=latest_high - previous_high,
+            )
+        )
+    return sorted(changes, key=lambda change: (change.target_date, change.model_name))
 
 
 def implied_probability_from_market(

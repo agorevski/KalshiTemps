@@ -11,6 +11,7 @@ from kalshi_temps.fusion import (  # noqa: E402
     ModelHighForecast,
     active_risk_guards,
     compare_bucket_probabilities,
+    compute_model_run_changes,
     compute_model_spread,
     evaluate_freshness,
     generate_risk_guards,
@@ -38,6 +39,20 @@ def test_compute_model_spread_accepts_dataclasses_and_empty_inputs() -> None:
     assert spread.spread_f == 3.25
     assert compute_model_spread({}).model_count == 0
     assert compute_model_spread({}).spread_f is None
+
+
+def test_compute_model_run_changes_compares_latest_to_previous_per_model() -> None:
+    changes = compute_model_run_changes(
+        [
+            {"model_name": "HRRR", "target_date": "2026-07-15", "run_at": "2026-07-14T12:00:00Z", "high_f": 75},
+            {"model_name": "HRRR", "target_date": "2026-07-15", "run_at": "2026-07-14T18:00:00Z", "high_f": 77.5},
+            {"model_name": "GFS", "target_date": "2026-07-15", "run_at": "2026-07-14T18:00:00Z", "high_f": 74},
+        ]
+    )
+
+    assert len(changes) == 1
+    assert changes[0].model_name == "HRRR"
+    assert changes[0].change_f == 2.5
 
 
 def test_implied_probability_from_mid_or_bid_ask_cents() -> None:

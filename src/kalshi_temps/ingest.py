@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -24,6 +27,43 @@ DEFAULT_AVIATION_WEATHER_METAR_URL_TEMPLATE = (
     "https://aviationweather.gov/api/data/metar?ids={station}&format=raw&taf=false"
 )
 TextFetcher = Callable[[str], str]
+SUPPORTED_MANUAL_MODEL_NAMES = {"HRRR", "NAM", "GFS", "NBM", "ECMWF", "GraphCast", "GraphCast/AI"}
+
+
+@dataclass(frozen=True)
+class CollectorResult:
+    source: str
+    collector_name: str
+    started_at: str
+    finished_at: str
+    status: str
+    records: list[dict[str, Any]] = field(default_factory=list)
+    records_returned: int = 0
+    newest_observation_at: str | None = None
+    latency_seconds: float | None = None
+    error_message: str | None = None
+    source_url: str | None = None
+    payload_hash: str | None = None
+    attempts: int = 1
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == "success"
+
+    def poll_record(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "collector_name": self.collector_name,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "status": self.status,
+            "records_returned": self.records_returned,
+            "newest_observation_at": self.newest_observation_at,
+            "latency_seconds": self.latency_seconds,
+            "error_message": self.error_message,
+            "source_url": self.source_url,
+            "payload_hash": self.payload_hash,
+        }
 
 
 def normalize_forecast_discussion(
@@ -107,10 +147,33 @@ def normalize_model_high(record: Mapping[str, Any]) -> dict[str, Any]:
         "source_url": _optional_str(record, "source_url"),
         "provenance": record.get("provenance"),
     }
+    if "probability_buckets" in record or "probabilities" in record or "buckets" in record:
+        normalized["probability_buckets"] = _normalize_probability_buckets(
+            _first_present(record, "probability_buckets", ("probabilities", "buckets"))
+        )
     normalized["provenance_hash"] = provenance_hash(normalized)
     if normalized["provenance"] is None:
         normalized["provenance"] = normalized["provenance_hash"]
     return normalized
+
+
+def parse_model_high_records(payload: str | bytes | Mapping[str, Any] | list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize manually supplied model-high records from JSON/CSV-like payloads.
+
+    This intentionally supports manual HRRR/NAM/GFS/NBM/ECMWF/GraphCast-style
+    records only; it does not collect from paid/private model APIs.
+    """
+    raw_records = _coerce_model_high_records(payload)
+    return [normalize_model_high(record) for record in raw_records]
+
+
+def load_model_high_records(path: str | Path) -> list[dict[str, Any]]:
+    """Read a JSON or CSV file of model-high records and normalize them."""
+    record_path = Path(path)
+    text = record_path.read_text(encoding="utf-8")
+    if record_path.suffix.lower() == ".json" or text.lstrip().startswith(("{", "[")):
+        return parse_model_high_records(text)
+    return parse_model_high_records(_csv_records(text))
 
 
 def normalize_market_snapshot(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -192,6 +255,103 @@ def collect_metar_observation(
     return normalized
 
 
+def run_forecast_discussion_collector(
+    *,
+    source: str = "NWS Seattle Forecast Discussion",
+    url: str = DEFAULT_NWS_SEW_DISCUSSION_URL,
+    fetcher: TextFetcher | None = None,
+    timeout: float = 10,
+    ingest_at: datetime | str | None = None,
+    max_attempts: int = 1,
+) -> CollectorResult:
+    """Run the NWS discussion collector and return a persistable poll result."""
+    attempts = _validated_attempts(max_attempts)
+    started = datetime.now(timezone.utc)
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            record = collect_forecast_discussion(url=url, fetcher=fetcher, timeout=timeout, ingest_at=ingest_at)
+            finished = datetime.now(timezone.utc)
+            return CollectorResult(
+                source=source,
+                collector_name="nws_discussion",
+                started_at=_datetime_to_iso(started),
+                finished_at=_datetime_to_iso(finished),
+                status="success",
+                records=[record],
+                records_returned=1,
+                newest_observation_at=record.get("issued_at") or record.get("ingest_at"),
+                latency_seconds=round((finished - started).total_seconds(), 3),
+                source_url=url,
+                payload_hash=record.get("raw_payload_hash") or record.get("text_hash"),
+                attempts=attempt,
+            )
+        except Exception as exc:  # noqa: BLE001 - result captures collector failures for persistence.
+            last_error = exc
+    return _failed_collector_result(
+        source=source,
+        collector_name="nws_discussion",
+        started=started,
+        source_url=url,
+        error=last_error,
+        attempts=attempts,
+    )
+
+
+def run_metar_collector(
+    *,
+    source: str = "Aviation Weather METAR",
+    station: str = "KSEA",
+    url: str | None = None,
+    fetcher: TextFetcher | None = None,
+    timeout: float = 10,
+    reference_date: date | datetime | str | None = None,
+    ingest_at: datetime | str | None = None,
+    max_attempts: int = 1,
+) -> CollectorResult:
+    """Run the METAR collector and return a persistable poll result."""
+    attempts = _validated_attempts(max_attempts)
+    station_id = station.strip().upper()
+    source_url = url or DEFAULT_AVIATION_WEATHER_METAR_URL_TEMPLATE.format(station=station_id)
+    started = datetime.now(timezone.utc)
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            record = collect_metar_observation(
+                station=station_id,
+                url=source_url,
+                fetcher=fetcher,
+                timeout=timeout,
+                reference_date=reference_date,
+                ingest_at=ingest_at,
+            )
+            finished = datetime.now(timezone.utc)
+            return CollectorResult(
+                source=source,
+                collector_name="metar",
+                started_at=_datetime_to_iso(started),
+                finished_at=_datetime_to_iso(finished),
+                status="success",
+                records=[record],
+                records_returned=1,
+                newest_observation_at=record.get("observed_at") or record.get("ingest_at"),
+                latency_seconds=round((finished - started).total_seconds(), 3),
+                source_url=source_url,
+                payload_hash=record.get("raw_payload_hash") or record.get("hash"),
+                attempts=attempt,
+            )
+        except Exception as exc:  # noqa: BLE001 - result captures collector failures for persistence.
+            last_error = exc
+    return _failed_collector_result(
+        source=source,
+        collector_name="metar",
+        started=started,
+        source_url=source_url,
+        error=last_error,
+        attempts=attempts,
+    )
+
+
 def source_freshness_metadata(
     *,
     source_name: str,
@@ -264,6 +424,43 @@ def _fetch_with_optional_fetcher(url: str, *, fetcher: TextFetcher | None, timeo
         raise ValueError(f"fetch failed for {url}: {exc}") from exc
 
 
+def _validated_attempts(max_attempts: int) -> int:
+    try:
+        attempts = int(max_attempts)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_attempts must be a positive integer") from exc
+    if attempts < 1:
+        raise ValueError("max_attempts must be a positive integer")
+    return attempts
+
+
+def _failed_collector_result(
+    *,
+    source: str,
+    collector_name: str,
+    started: datetime,
+    source_url: str | None,
+    error: Exception | None,
+    attempts: int,
+) -> CollectorResult:
+    finished = datetime.now(timezone.utc)
+    message = str(error) if error else "collector failed"
+    return CollectorResult(
+        source=source,
+        collector_name=collector_name,
+        started_at=_datetime_to_iso(started),
+        finished_at=_datetime_to_iso(finished),
+        status="failed",
+        records=[],
+        records_returned=0,
+        latency_seconds=round((finished - started).total_seconds(), 3),
+        error_message=message,
+        source_url=source_url,
+        payload_hash=provenance_hash({"source_url": source_url, "error": message, "attempts": attempts}),
+        attempts=attempts,
+    )
+
+
 def _select_metar_line(raw_text: str, station: str) -> str:
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     if not lines:
@@ -275,6 +472,75 @@ def _select_metar_line(raw_text: str, station: str) -> str:
         if tokens and tokens[0].upper() == station:
             return line
     raise ValueError(f"METAR response did not contain station {station}")
+
+
+def _coerce_model_high_records(payload: str | bytes | Mapping[str, Any] | list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        stripped = payload.strip()
+        if not stripped:
+            raise ValueError("model high payload is empty")
+        if stripped.startswith(("{", "[")):
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"model high JSON payload is invalid: {exc.msg}") from exc
+            return _coerce_model_high_records(decoded)
+        return _csv_records(stripped)
+    if isinstance(payload, Mapping):
+        for key in ("records", "model_highs", "model_runs", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return _coerce_model_high_records(nested)
+        return [payload]
+    if isinstance(payload, list):
+        if not all(isinstance(item, Mapping) for item in payload):
+            raise ValueError("model high records must be mappings")
+        return payload
+    raise ValueError("model high payload must be JSON, CSV text, a mapping, or a list of mappings")
+
+
+def _csv_records(text: str) -> list[Mapping[str, Any]]:
+    rows = [dict(row) for row in csv.DictReader(text.splitlines())]
+    if not rows:
+        raise ValueError("model high CSV payload did not contain records")
+    return rows
+
+
+def _normalize_probability_buckets(value: Any) -> list[dict[str, float | str]]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError("probability_buckets must be JSON when supplied as text") from exc
+
+    if isinstance(value, Mapping):
+        items = [{"temperature_bucket": str(bucket), "probability": probability} for bucket, probability in value.items()]
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ValueError("probability_buckets must be a mapping or list")
+
+    normalized: list[dict[str, float | str]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ValueError("probability bucket entries must be mappings")
+        bucket = _optional_str(item, "temperature_bucket", aliases=("bucket", "label"))
+        if bucket is None:
+            raise ValueError("probability bucket temperature_bucket is required")
+        probability = _required_float(item, "probability", aliases=("prob", "p"))
+        if 1 < probability <= 100:
+            probability = probability / 100
+        if probability < 0 or probability > 1:
+            raise ValueError("probability bucket probability must be between 0 and 1")
+        normalized.append({"temperature_bucket": bucket, "probability": probability})
+    return normalized
 
 
 def _parse_metar_string(record: str, *, reference_date: date | datetime | str | None) -> dict[str, Any]:
