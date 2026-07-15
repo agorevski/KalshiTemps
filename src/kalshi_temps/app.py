@@ -112,6 +112,8 @@ def dashboard(request: Request) -> HTMLResponse:
         weather_regime_features = repo.list_weather_regime_features(limit=3)
         intraday_features = repo.list_intraday_features(limit=3)
         market_snapshots = repo.list_market_snapshots(limit=6)
+        kalshi_candidates = repo.list_kalshi_market_candidates(limit=6)
+        selected_kalshi_market = repo.selected_kalshi_market()
         market_verification = repo.market_verification_summary()
         market_rules = repo.list_market_rules(limit=3)
         station_metadata = repo.list_station_metadata(limit=4)
@@ -147,6 +149,8 @@ def dashboard(request: Request) -> HTMLResponse:
             "weather_regime_features": weather_regime_features,
             "intraday_features": intraday_features,
             "market_snapshots": market_snapshots,
+            "kalshi_candidates": kalshi_candidates,
+            "selected_kalshi_market": selected_kalshi_market,
             "market_verification": market_verification,
             "market_rules": market_rules,
             "station_metadata": station_metadata,
@@ -210,6 +214,49 @@ def api_market_snapshots(limit: int = Query(default=50, ge=1, le=500)) -> dict[s
     with connection() as conn:
         snapshots = WeatherRepository(conn).list_market_snapshots(limit=limit)
     return {"market_snapshots": snapshots}
+
+
+@app.get("/api/kalshi/market-candidates")
+def api_kalshi_market_candidates(
+    target_date: str | None = None,
+    selected_only: bool = False,
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict[str, object]:
+    with connection() as conn:
+        candidates = WeatherRepository(conn).list_kalshi_market_candidates(
+            target_date=target_date,
+            selected_only=selected_only,
+            limit=limit,
+        )
+    return {"kalshi_market_candidates": candidates}
+
+
+@app.get("/api/kalshi/selected-market")
+def api_kalshi_selected_market(target_date: str | None = None) -> dict[str, object]:
+    with connection() as conn:
+        selected = WeatherRepository(conn).selected_kalshi_market(target_date)
+    return {"selected_kalshi_market": selected}
+
+
+@app.post("/api/kalshi/select-market")
+def api_kalshi_select_market(target_date: str, ticker: str, notes: str | None = None) -> dict[str, object]:
+    with connection() as conn:
+        selected = WeatherRepository(conn).select_kalshi_market_candidate(
+            target_date=target_date,
+            ticker=ticker,
+            notes=notes,
+        )
+    return {
+        "selected_kalshi_market": selected,
+        "note": "Selection is local research state only; no bet was placed and settlement rules remain manually verified.",
+    }
+
+
+@app.post("/kalshi/select-market")
+def dashboard_select_kalshi_market(target_date: str, ticker: str, notes: str | None = None) -> RedirectResponse:
+    with connection() as conn:
+        WeatherRepository(conn).select_kalshi_market_candidate(target_date=target_date, ticker=ticker, notes=notes)
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @app.get("/api/model-runs")

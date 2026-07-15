@@ -26,6 +26,7 @@ from .ingest import (
     run_forecast_discussion_collector,
     run_metar_collector,
 )
+from .kalshi import KalshiClient, find_seattle_temperature_candidates, kalshi_config_from_env
 from .ops import backup_path, ops_status
 from .paper_live import (
     close_run as close_paper_live_run,
@@ -180,6 +181,40 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_rules_parser = subparsers.add_parser("list-market-rules", help="List stored market rule verification records")
     list_rules_parser.add_argument("--limit", type=int, default=50, help="Maximum number of rules to list")
+
+    find_kalshi_parser = subparsers.add_parser(
+        "find-kalshi-markets",
+        help="Find read-only Kalshi Seattle climate-market candidates for a target date",
+    )
+    find_kalshi_parser.add_argument("--target-date", required=True, help="ISO target date, e.g. 2026-07-15")
+    find_kalshi_parser.add_argument("--status", default="open", help="Kalshi market status filter; use empty string for any")
+    find_kalshi_parser.add_argument("--limit", type=int, default=100, help="Kalshi page size and maximum persisted candidates")
+    find_kalshi_parser.add_argument("--json", action="store_true", help="Print candidate records as JSON")
+
+    select_kalshi_parser = subparsers.add_parser(
+        "select-kalshi-market",
+        help="Select one persisted Kalshi market candidate for a target date; no bet is placed",
+    )
+    select_kalshi_parser.add_argument("--target-date", required=True)
+    select_kalshi_parser.add_argument("--ticker", required=True)
+    select_kalshi_parser.add_argument("--notes")
+    select_kalshi_parser.add_argument(
+        "--draft-rule",
+        action="store_true",
+        help="Create an unverified market-rule draft from Kalshi metadata",
+    )
+
+    collect_kalshi_parser = subparsers.add_parser(
+        "collect-kalshi-market",
+        help="Collect a read-only Kalshi market price snapshot by ticker",
+    )
+    collect_kalshi_parser.add_argument("--ticker", required=True)
+
+    collect_selected_kalshi_parser = subparsers.add_parser(
+        "collect-selected-kalshi-market",
+        help="Collect a read-only price snapshot for the selected target-date candidate",
+    )
+    collect_selected_kalshi_parser.add_argument("--target-date", required=True)
 
     outcome_parser = subparsers.add_parser("record-official-outcome", help="Record an official daily high outcome")
     outcome_parser.add_argument("--station", default="KSEA", help="Official station id")
@@ -386,6 +421,69 @@ def collect_and_save_nws_observation(
     record = collect_nws_station_observation(station, url=url, fetcher=fetcher)
     with connection(db_path) as conn:
         return WeatherRepository(conn).save_official_observation_record(source_name, record)
+
+
+def find_and_save_kalshi_markets(
+    db_path: str | None,
+    *,
+    target_date: str,
+    status: str | None = "open",
+    limit: int = 100,
+    client: KalshiClient | None = None,
+) -> dict[str, object]:
+    initialize_database(db_path)
+    kalshi = client or KalshiClient(kalshi_config_from_env())
+    markets = kalshi.iter_markets(status=status or None, limit=limit)
+    candidates = find_seattle_temperature_candidates(markets[:limit], target_date=target_date)
+    with connection(db_path) as conn:
+        return WeatherRepository(conn).save_kalshi_market_candidates(candidates)
+
+
+def select_saved_kalshi_market(
+    db_path: str | None,
+    *,
+    target_date: str,
+    ticker: str,
+    notes: str | None = None,
+    draft_rule: bool = False,
+) -> dict[str, object]:
+    initialize_database(db_path)
+    with connection(db_path) as conn:
+        repo = WeatherRepository(conn)
+        selected = repo.select_kalshi_market_candidate(target_date=target_date, ticker=ticker, notes=notes)
+        if draft_rule:
+            selected["draft_market_rule"] = repo.draft_market_rule_from_selected_kalshi_market(target_date)
+        return selected
+
+
+def collect_and_save_kalshi_market(
+    db_path: str | None,
+    *,
+    ticker: str,
+    client: KalshiClient | None = None,
+) -> dict[str, object]:
+    initialize_database(db_path)
+    kalshi = client or KalshiClient(kalshi_config_from_env())
+    payload = kalshi.get_market(ticker)
+    market = payload.get("market")
+    if not isinstance(market, dict):
+        raise ValueError("Kalshi market response must contain a market object")
+    with connection(db_path) as conn:
+        return WeatherRepository(conn).save_kalshi_market_snapshot_from_payload(market)
+
+
+def collect_selected_kalshi_market(
+    db_path: str | None,
+    *,
+    target_date: str,
+    client: KalshiClient | None = None,
+) -> dict[str, object]:
+    initialize_database(db_path)
+    with connection(db_path) as conn:
+        selected = WeatherRepository(conn).selected_kalshi_market(target_date)
+    if selected is None:
+        raise KeyError(f"No selected Kalshi market for {target_date}")
+    return collect_and_save_kalshi_market(db_path, ticker=str(selected["ticker"]), client=client)
 
 
 def import_and_save_climate_daily_summaries(db_path: str | None, *, file_path: str) -> dict[str, object]:
@@ -784,6 +882,71 @@ def main(argv: list[str] | None = None) -> int:
             rows = WeatherRepository(conn).list_market_rules(limit=args.limit)
         for row in rows:
             print(f"{row['ticker']}\t{row['verification_status']}\t{row['official_source_name']}\t{row['source_url']}")
+        return 0
+
+    if args.command == "find-kalshi-markets":
+        try:
+            result = find_and_save_kalshi_markets(
+                args.db,
+                target_date=args.target_date,
+                status=args.status or None,
+                limit=args.limit,
+            )
+        except ValueError as exc:
+            print(f"Kalshi market discovery failed: {exc}", file=sys.stderr)
+            return 1
+        candidates = result["candidates"]
+        if args.json:
+            print(json.dumps(candidates, indent=2, sort_keys=True))
+        else:
+            print(
+                f"Saved {result['saved_count']} Kalshi candidate(s) for {args.target_date}; "
+                "research-only, no bet placed."
+            )
+            for candidate in candidates:
+                reasons = "; ".join(candidate.get("rank_reasons") or [])
+                print(
+                    f"{candidate['ticker']}\t{candidate['rank_score']}\t"
+                    f"{candidate.get('status') or 'unknown'}\t{candidate['title']}\t{reasons}"
+                )
+        return 0
+
+    if args.command == "select-kalshi-market":
+        try:
+            selected = select_saved_kalshi_market(
+                args.db,
+                target_date=args.target_date,
+                ticker=args.ticker,
+                notes=args.notes,
+                draft_rule=args.draft_rule,
+            )
+        except KeyError as exc:
+            print(f"Kalshi market selection failed: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"Selected Kalshi market {selected['ticker']} for {selected['target_date']}; "
+            "selection is not settlement verification or a trade recommendation."
+        )
+        if args.draft_rule:
+            print("Created unverified market-rule draft from Kalshi metadata; manually verify every field.")
+        return 0
+
+    if args.command == "collect-kalshi-market":
+        try:
+            snapshot = collect_and_save_kalshi_market(args.db, ticker=args.ticker)
+        except ValueError as exc:
+            print(f"Kalshi market snapshot failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"Saved Kalshi snapshot {snapshot['market_ticker']} at {snapshot['captured_at']}; no bet placed.")
+        return 0
+
+    if args.command == "collect-selected-kalshi-market":
+        try:
+            snapshot = collect_selected_kalshi_market(args.db, target_date=args.target_date)
+        except (KeyError, ValueError) as exc:
+            print(f"Selected Kalshi snapshot failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"Saved selected Kalshi snapshot {snapshot['market_ticker']} at {snapshot['captured_at']}; no bet placed.")
         return 0
 
     if args.command == "record-official-outcome":
