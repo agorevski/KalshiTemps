@@ -4,13 +4,14 @@ set -euo pipefail
 DB_PATH="${KALSHI_TEMPS_DB:-data/kalshi_temps.sqlite3}"
 BACKUP_PATH=""
 FORCE=0
+DRY_RUN=0
 
 usage() {
   cat >&2 <<USAGE
-Usage: $0 --backup PATH [--db PATH] [--force]
+Usage: $0 --backup PATH [--db PATH] [--force] [--dry-run]
 
 Restores a SQLite backup. Existing target databases are never overwritten
-unless --force is supplied.
+unless --force is supplied. --dry-run validates without writing.
 USAGE
 }
 
@@ -28,6 +29,10 @@ while (($#)); do
       ;;
     --force)
       FORCE=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
       shift
       ;;
     -h|--help)
@@ -56,22 +61,24 @@ if [[ -e "$DB_PATH" && "$FORCE" -ne 1 ]]; then
   exit 1
 fi
 
-TARGET_DIR="$(dirname -- "$DB_PATH")"
-mkdir -p -- "$TARGET_DIR"
-
 export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
-python - "$BACKUP_PATH" "$DB_PATH" "$FORCE" <<'PY'
+python - "$BACKUP_PATH" "$DB_PATH" "$FORCE" "$DRY_RUN" <<'PY'
 from __future__ import annotations
 
 import sys
 from kalshi_temps.ops import OpsError, safe_restore_preflight
 
 try:
-    safe_restore_preflight(sys.argv[1], sys.argv[2], force=sys.argv[3] == "1")
+    safe_restore_preflight(sys.argv[1], sys.argv[2], force=sys.argv[3] == "1", dry_run=sys.argv[4] == "1")
 except OpsError as exc:
     print(f"Restore preflight failed: {exc}", file=sys.stderr)
     raise SystemExit(1)
 PY
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "Restore dry-run passed for $BACKUP_PATH -> $DB_PATH"
+  exit 0
+fi
 
 RESTORE_TMP="${DB_PATH}.restore.$$"
 rm -f -- "$RESTORE_TMP"

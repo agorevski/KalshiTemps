@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 
-from .db import database_path
+from .db import EXPECTED_INDEXES, EXPECTED_SCHEMA_FINGERPRINT, EXPECTED_TABLES, EXPECTED_VIEWS, database_path
 from .auth import access_status
 
 MIN_FREE_BYTES = 50 * 1024 * 1024
@@ -114,6 +115,135 @@ def backup_path(
     return Path(backup_dir).expanduser() / backup_file_name(db_path, timestamp=timestamp)
 
 
+def _readonly_connection(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def sqlite_check(path: str | os.PathLike[str] | None = None, *, quick: bool = True) -> dict[str, object]:
+    db_path = database_path(path)
+    check = check_db_path(db_path)
+    errors: list[str] = []
+    result: str | None = None
+    pragma = "quick_check" if quick else "integrity_check"
+    if not check.exists:
+        errors.append("database file does not exist")
+    elif not check.is_file:
+        errors.append("database path is not a regular file")
+    elif check.sqlite_header != "ok":
+        errors.append("database file does not look like SQLite")
+    else:
+        try:
+            with _readonly_connection(db_path) as conn:
+                rows = conn.execute(f"PRAGMA {pragma}").fetchall()
+            values = [str(row[0]) for row in rows]
+            result = "; ".join(values)
+            if values != ["ok"]:
+                errors.append(f"{pragma} failed: {result}")
+        except sqlite3.DatabaseError as exc:
+            errors.append(f"{pragma} failed: {exc}")
+    return {"ok": not errors, "errors": errors, "path": str(db_path), "check": pragma, "result": result}
+
+
+def schema_status(path: str | os.PathLike[str] | None = None) -> dict[str, object]:
+    db_path = database_path(path)
+    check = check_db_path(db_path)
+    errors: list[str] = []
+    tables: set[str] = set()
+    indexes: set[str] = set()
+    views: set[str] = set()
+    fingerprint = ""
+    if not check.exists:
+        errors.append("database file does not exist")
+    elif not check.is_file:
+        errors.append("database path is not a regular file")
+    elif check.sqlite_header != "ok":
+        errors.append("database file does not look like SQLite")
+    else:
+        try:
+            with _readonly_connection(db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT type, name
+                    FROM sqlite_schema
+                    WHERE name NOT LIKE 'sqlite_%'
+                    ORDER BY type, name
+                    """
+                ).fetchall()
+            tables = {row["name"] for row in rows if row["type"] == "table"}
+            indexes = {row["name"] for row in rows if row["type"] == "index"}
+            views = {row["name"] for row in rows if row["type"] == "view"}
+            fingerprint = _schema_fingerprint(tables, indexes, views)
+        except sqlite3.DatabaseError as exc:
+            errors.append(f"schema read failed: {exc}")
+    missing_tables = sorted(EXPECTED_TABLES - tables)
+    missing_indexes = sorted(EXPECTED_INDEXES - indexes)
+    missing_views = sorted(EXPECTED_VIEWS - views)
+    fingerprint_match = fingerprint == EXPECTED_SCHEMA_FINGERPRINT
+    if missing_tables:
+        errors.append(f"missing expected tables: {', '.join(missing_tables)}")
+    if missing_indexes:
+        errors.append(f"missing expected indexes: {', '.join(missing_indexes)}")
+    if missing_views:
+        errors.append(f"missing expected views: {', '.join(missing_views)}")
+    if fingerprint and not fingerprint_match:
+        errors.append("schema fingerprint differs from expected schema object set")
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "path": str(db_path),
+        "fingerprint": fingerprint,
+        "expected_fingerprint": EXPECTED_SCHEMA_FINGERPRINT,
+        "fingerprint_match": fingerprint_match,
+        "missing_tables": missing_tables,
+        "missing_indexes": missing_indexes,
+        "missing_views": missing_views,
+        "table_count": len(tables),
+        "index_count": len(indexes),
+        "view_count": len(views),
+    }
+
+
+def _schema_fingerprint(tables: set[str], indexes: set[str], views: set[str]) -> str:
+    import hashlib
+
+    payload = "\n".join(
+        [f"index:{name}" for name in sorted(indexes)]
+        + [f"table:{name}" for name in sorted(tables)]
+        + [f"view:{name}" for name in sorted(views)]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def db_check(path: str | os.PathLike[str] | None = None, *, quick: bool = True) -> dict[str, object]:
+    disk = check_db_path(path).as_dict()
+    integrity = sqlite_check(path, quick=quick)
+    schema = schema_status(path)
+    errors = [*integrity["errors"], *schema["errors"]]
+    return {"ok": not errors, "errors": errors, "database": disk, "integrity": integrity, "schema": schema}
+
+
+def verify_backup_file(path: str | os.PathLike[str]) -> dict[str, object]:
+    backup_file = Path(path).expanduser()
+    check = check_db_path(backup_file)
+    errors: list[str] = []
+    if not check.exists:
+        errors.append("backup file does not exist")
+    if check.is_dir:
+        errors.append("backup path is a directory")
+    if check.exists and check.is_file and backup_file.stat().st_size == 0:
+        errors.append("backup file is empty")
+    if check.exists and not check.readable:
+        errors.append("backup file is not readable")
+    if check.exists and check.sqlite_header != "ok":
+        errors.append("backup file does not look like SQLite")
+    quick = sqlite_check(backup_file, quick=True) if not errors else None
+    if quick and not quick["ok"]:
+        errors.extend(str(error) for error in quick["errors"])
+    return {"ok": not errors, "errors": errors, "backup": check.as_dict(), "quick_check": quick}
+
+
 def validate_backup_source(path: str | os.PathLike[str] | None = None) -> dict[str, object]:
     check = check_db_path(path)
     errors: list[str] = []
@@ -125,7 +255,10 @@ def validate_backup_source(path: str | os.PathLike[str] | None = None) -> dict[s
         errors.append("database file is not readable")
     if check.exists and check.sqlite_header != "ok":
         errors.append("database file does not look like SQLite")
-    return {"ok": not errors, "errors": errors, "database": check.as_dict()}
+    quick = sqlite_check(path, quick=True) if not errors else None
+    if quick and not quick["ok"]:
+        errors.extend(str(error) for error in quick["errors"])
+    return {"ok": not errors, "errors": errors, "database": check.as_dict(), "quick_check": quick}
 
 
 def safe_restore_preflight(
@@ -133,20 +266,18 @@ def safe_restore_preflight(
     target: str | os.PathLike[str] | None = None,
     *,
     force: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, object]:
     backup_file = Path(backup).expanduser()
     target_file = database_path(target)
     errors: list[str] = []
-    if not backup_file.exists():
-        errors.append("backup file does not exist")
-    elif not backup_file.is_file():
-        errors.append("backup path is not a regular file")
-    else:
-        with backup_file.open("rb") as handle:
-            if handle.read(16) != b"SQLite format 3\0":
-                errors.append("backup file does not look like SQLite")
-    if backup_file.resolve() == target_file.resolve():
+    backup_check = verify_backup_file(backup_file)
+    if not backup_check["ok"]:
+        errors.extend(str(error) for error in backup_check["errors"])
+    if backup_file.exists() and target_file.exists() and backup_file.resolve() == target_file.resolve():
         errors.append("backup and target paths must differ")
+    if target_file.exists() and target_file.is_dir():
+        errors.append("target path is a directory")
     if target_file.exists() and not force:
         errors.append("target database exists; pass --force to overwrite")
     if not target_file.parent.exists():
@@ -161,6 +292,61 @@ def safe_restore_preflight(
         "target": str(target_file),
         "target_exists": target_file.exists(),
         "force": force,
+        "dry_run": dry_run,
+        "backup_check": backup_check,
+    }
+
+
+def prune_backups(
+    backup_dir: str | os.PathLike[str] = "data/backups",
+    *,
+    older_than_days: int = 30,
+    keep: int = 5,
+    min_keep: int = 1,
+    dry_run: bool = True,
+) -> dict[str, object]:
+    if older_than_days < 0:
+        raise OpsError("older_than_days must be non-negative")
+    if min_keep < 1:
+        raise OpsError("min_keep must be at least 1")
+    if keep < min_keep:
+        raise OpsError(f"keep must be at least min_keep ({min_keep})")
+    directory = Path(backup_dir).expanduser()
+    if not directory.exists():
+        raise OpsError("backup directory does not exist")
+    if not directory.is_dir():
+        raise OpsError("backup path is not a directory")
+    backups = sorted(
+        [path for path in directory.iterdir() if path.is_file() and path.suffix in {".sqlite", ".sqlite3", ".db"}],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    protected = set(backups[:keep])
+    candidates = [
+        path
+        for path in backups[keep:]
+        if datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < cutoff and path not in protected
+    ]
+    remaining = len(backups) - len(candidates)
+    if remaining < min_keep:
+        raise OpsError(f"prune would leave fewer than min_keep backups ({min_keep})")
+    deleted: list[str] = []
+    if not dry_run:
+        for path in candidates:
+            path.unlink()
+            deleted.append(str(path))
+    return {
+        "ok": True,
+        "backup_dir": str(directory),
+        "dry_run": dry_run,
+        "older_than_days": older_than_days,
+        "keep": keep,
+        "min_keep": min_keep,
+        "candidate_count": len(candidates),
+        "candidates": [str(path) for path in candidates],
+        "deleted": deleted,
+        "remaining_count": remaining,
     }
 
 

@@ -64,4 +64,9 @@ fi
 
 umask 077
 cp -p -- "$DB_PATH" "$BACKUP_PATH"
+if ! python -m kalshi_temps verify-backup "$BACKUP_PATH" >/dev/null; then
+  rm -f -- "$BACKUP_PATH"
+  echo "Backup verification failed; removed invalid backup: $BACKUP_PATH" >&2
+  exit 1
+fi
 echo "$BACKUP_PATH"

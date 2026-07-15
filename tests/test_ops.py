@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
+import sqlite3
 import sys
 import uuid
 
@@ -16,11 +18,14 @@ from kalshi_temps.ops import (
     backup_file_name,
     backup_path,
     check_db_path,
+    db_check,
     disk_free_status,
     paper_live_readiness,
     paper_live_run_status,
+    prune_backups,
     safe_restore_preflight,
     validate_backup_source,
+    verify_backup_file,
 )
 
 
@@ -40,6 +45,32 @@ def test_db_path_and_disk_checks_for_sqlite_database() -> None:
         disk = disk_free_status(db_path, min_free_bytes=1)
         assert disk["ok"] is True
         assert disk["free_bytes"] > 0
+    finally:
+        db_path.unlink(missing_ok=True)
+
+
+def test_db_check_detects_healthy_database_schema() -> None:
+    db_path = _db_path("test-ops-healthy")
+    try:
+        initialize_database(str(db_path))
+        result = db_check(db_path)
+        assert result["ok"] is True
+        assert result["integrity"]["result"] == "ok"
+        assert result["schema"]["missing_tables"] == []
+        assert result["schema"]["missing_indexes"] == []
+    finally:
+        db_path.unlink(missing_ok=True)
+
+
+def test_db_check_detects_missing_expected_table() -> None:
+    db_path = _db_path("test-ops-missing-table")
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE data_sources (id INTEGER PRIMARY KEY)")
+        result = db_check(db_path)
+        assert result["ok"] is False
+        assert "observations" in result["schema"]["missing_tables"]
+        assert any("missing expected tables" in error for error in result["errors"])
     finally:
         db_path.unlink(missing_ok=True)
 
@@ -69,6 +100,44 @@ def test_restore_preflight_requires_force_for_existing_target() -> None:
     finally:
         backup.unlink(missing_ok=True)
         target.unlink(missing_ok=True)
+
+
+def test_verify_backup_rejects_corrupt_non_sqlite_backup() -> None:
+    backup = _db_path("test-ops-bad-backup")
+    try:
+        backup.write_text("not sqlite", encoding="utf-8")
+        result = verify_backup_file(backup)
+        assert result["ok"] is False
+        assert "backup file does not look like SQLite" in result["errors"]
+        with pytest.raises(OpsError, match="does not look like SQLite"):
+            safe_restore_preflight(backup, _db_path("test-ops-target-bad"), dry_run=True)
+    finally:
+        backup.unlink(missing_ok=True)
+
+
+def test_prune_backups_dry_run_and_min_keep_guard() -> None:
+    backup_dir = Path("data") / f"test-backups-{uuid.uuid4().hex}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        files = []
+        for index in range(4):
+            path = backup_dir / f"backup-{index}.sqlite3"
+            initialize_database(path)
+            old_time = datetime(2026, 1, index + 1, tzinfo=timezone.utc).timestamp()
+            os.utime(path, (old_time, old_time))
+            files.append(path)
+
+        result = prune_backups(backup_dir, older_than_days=1, keep=2, min_keep=2, dry_run=True)
+        assert result["candidate_count"] == 2
+        assert result["deleted"] == []
+        assert all(path.exists() for path in files)
+
+        with pytest.raises(OpsError, match="keep must be at least min_keep"):
+            prune_backups(backup_dir, older_than_days=1, keep=1, min_keep=2, dry_run=True)
+    finally:
+        for path in backup_dir.glob("*"):
+            path.unlink(missing_ok=True)
+        backup_dir.rmdir()
 
 
 def test_access_posture_summary_classifies_binding_risk() -> None:
