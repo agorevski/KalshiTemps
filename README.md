@@ -5,12 +5,15 @@ normalizing, and reviewing evidence around Seattle daily high-temperature market
 It is designed for decision support, provenance, and recordkeeping—not guaranteed
 arbitrage, financial advice, or unattended trading.
 
-The current application is a working local demo and research scaffold. It can
-initialize a SQLite database, seed clearly demo-style Seattle evidence, render a
-dashboard, expose read-only JSON endpoints, and run deterministic parser/fusion
-utilities. It does **not** yet provide verified live weather ingestion, live
-Kalshi ingestion, authentication, calibrated prediction models, production
-deployment, or automated order execution.
+The current application is a working local research scaffold with validated
+SQLite/FastAPI flows, manual public weather collectors, market-rule verification
+records, forecast-model import foundations, weather-feature extraction,
+historical-calibration scaffolding, collector health, and local ops status. Full
+local validation has passed across 67 tests, compile checks, script syntax
+checks, CLI smoke checks, and FastAPI endpoint smoke checks. It does **not** yet
+provide authenticated access, permitted live Kalshi feeds, licensed ECMWF or
+GraphCast data, satellite image processing, deep historical calibration,
+production operational soak, compliance approval, or automated trading.
 
 ## What the product is for
 
@@ -33,25 +36,36 @@ Implemented in this repository:
 
 - FastAPI app with dashboard routes at `/` and `/dashboard`.
 - Health endpoints at `/health` and `/health/json`.
-- JSON endpoints for observations, sources, model runs, market snapshots, and
-  fusion summary.
+- JSON endpoints for observations, sources, model runs, model spread, market
+  snapshots, fusion summary, market verification, collector health, weather
+  features, calibration summaries, and ops status.
 - SQLite schema initialization and lightweight migration helpers.
-- Repository methods for sources, observations, model runs, model spread,
-  marine-layer indicators, market snapshots, risk guards, and events.
+- Repository methods for sources, observations, collectors, market rules, model
+  runs, model spread, marine/weather/intraday features, market snapshots,
+  official outcomes, prediction snapshots, calibration metrics, risk guards, and
+  events.
 - Demo seed data for a six-layer Seattle temperature evidence view.
+- Public NWS discussion and Aviation Weather METAR collector foundations.
+- CLI workflows for market-rule records, manual model-high imports, feature
+  extraction, collector health, local ops status, official outcomes, prediction
+  snapshots, and calibration summaries.
 - Pure utilities for METAR-like observation normalization, forecast-discussion
   normalization, model-high normalization, market snapshot normalization,
-  provenance hashes, freshness checks, model spread, and bucket probability
-  deltas.
+  provenance hashes, freshness checks, model spread, feature extraction, and
+  bucket probability deltas.
 
-Not implemented yet:
+Remaining unresolved risks:
 
-- Verified live NOAA/NWS/METAR/Weather Underground/satellite/model ingestion.
-- Verified live Kalshi market metadata, order book, or price ingestion.
-- Market-specific settlement-rule verification workflow.
-- Authentication, authorization, production deployment, or monitored backups.
-- Historical backfill, calibrated probability models, or validated bias tables.
-- Automated trading, account integration, or portfolio/risk execution controls.
+- Real live operational soak with scheduled collectors, monitoring, alerting,
+  backups, restore drills, and multi-week paper-live reconciliation.
+- Authenticated dashboard/API access control and role-based permissions.
+- Live Kalshi feed credentials, permissions, metadata, bid/ask, and order-book
+  ingestion.
+- Paid/licensed ECMWF or GraphCast data access and license-compliant storage.
+- Satellite image processing for quantitative cloud/stratus burn-off features.
+- Real historical backfill depth and model calibration on sufficient data.
+- Compliance/legal review for trading-adjacent use; automated trading remains
+  out of scope.
 
 See [docs/shortcomings-and-roadmap.md](docs/shortcomings-and-roadmap.md) for the
 honest gap list and phased roadmap.
@@ -128,6 +142,22 @@ python -m kalshi_temps seed-demo
 # Initialize and seed in one command
 python -m kalshi_temps init-db --seed
 
+# Run public weather collectors once, recording poll health
+python -m kalshi_temps run-collectors
+
+# Add/list/verify market settlement-rule metadata
+python -m kalshi_temps add-market-rule --help
+python -m kalshi_temps verify-market-rule <TICKER> --verified-by <NAME>
+python -m kalshi_temps list-market-rules
+
+# Import manual model highs and compute/view calibration scaffolding
+python -m kalshi_temps import-model-highs <file.json-or.csv>
+python -m kalshi_temps compute-calibration
+
+# Inspect collector and local ops posture
+python -m kalshi_temps collector-health
+python -m kalshi_temps ops-status
+
 # Run the local app on loopback
 uvicorn kalshi_temps.app:app --host 127.0.0.1 --port 8000
 
@@ -142,13 +172,17 @@ PYTHONPATH=src pytest
 
 ```text
 src/kalshi_temps/
-  app.py          FastAPI routes, dashboard rendering, health checks
-  cli.py          init-db and seed-demo CLI
-  db.py           SQLite path resolution, connections, schema initialization
-  repository.py   SQL repository boundary for app/domain data
-  ingest.py       deterministic normalization and provenance utilities
-  fusion.py       model spread, freshness, risk guard, and probability utilities
-  seed.py         local demo data
+  app.py              FastAPI routes, dashboard rendering, health/API checks
+  cli.py              init, collector, rule, feature, ops, and calibration CLI
+  db.py               SQLite path resolution, connections, schema initialization
+  repository.py       SQL repository boundary for app/domain data
+  ingest.py           deterministic normalization and provenance utilities
+  fusion.py           model spread, freshness, risk guard, probability utilities
+  market_rules.py     settlement-rule completeness and verification helpers
+  weather_features.py deterministic weather-regime and intraday features
+  calibration.py      historical bias and bucket calibration foundations
+  ops.py              local database/disk/access posture helpers
+  seed.py             local demo data
 
 templates/
   dashboard.html  local research dashboard
@@ -220,14 +254,17 @@ PYTHONPATH=src python -m compileall -q src tests
 PYTHONPATH=src pytest
 ```
 
-Current tests cover:
+Current validation has passed for 67 tests plus compileall, script syntax, CLI
+smoke, and FastAPI endpoint smoke checks. Tests cover:
 
 - SQLite initialization, seeding, repository flows, CLI smoke checks, and app
   endpoints.
 - Parser/normalizer behavior for forecast discussions, METAR-like observations,
   model highs, market snapshots, freshness metadata, and provenance hashes.
-- Fusion utilities for model spread, implied probabilities, probability deltas,
-  freshness, and risk guards.
+- Collector poll records and mocked public weather collector flows.
+- Market-rule verification, model spread, weather features, historical
+  calibration scaffolding, ops status, implied probabilities, freshness, and risk
+  guards.
 
 ## Documentation map
 

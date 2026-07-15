@@ -111,7 +111,7 @@ Open:
 - API docs: <http://127.0.0.1:8000/docs>
 - Health: <http://127.0.0.1:8000/health/json>
 
-Health should return JSON with `status: ok`, `service: kalshi-temps`, and the configured database path.
+Health should return JSON with `status: ok`, `service: kalshi-temps`, and non-sensitive database status. Use `kalshi-temps ops-status` locally when you need the full configured path.
 
 ## Validation checks
 
@@ -161,14 +161,13 @@ Current repository guard status is intentionally conservative: repository code t
 SQLite backup before schema changes, bulk imports, or manual experiments:
 
 ```bash
-mkdir -p data/backups
-cp data/kalshi_temps.sqlite3 "data/backups/kalshi_temps-$(date -u +%Y%m%dT%H%M%SZ).sqlite3"
+scripts/backup_sqlite.sh
 ```
 
 Restore:
 
 ```bash
-cp data/backups/<backup-file>.sqlite3 data/kalshi_temps.sqlite3
+scripts/restore_sqlite.sh --backup data/backups/<backup-file>.sqlite3 --force
 PYTHONPATH=src python -m kalshi_temps init-db
 ```
 
@@ -219,7 +218,7 @@ echo "$KALSHI_TEMPS_DB"
 curl http://127.0.0.1:8000/health/json
 ```
 
-The app reports the database path it is using. Scripts default to `data/kalshi_temps.sqlite3` and export that value.
+The public health and ops endpoints avoid full local paths. Run `PYTHONPATH=src python -m kalshi_temps ops-status` on the machine to inspect the configured path. Scripts default to `data/kalshi_temps.sqlite3` and export that value.
 
 ### SQLite lock or write failures
 
