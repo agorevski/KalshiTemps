@@ -6,20 +6,20 @@ For a more detailed accuracy-focused plan for Seattle daily high-temperature sig
 
 ## Current product boundary
 
-The repository is now a working local research application with a tested SQLite/FastAPI dashboard, deterministic ingestion foundations, official source/station metadata, market-rule verification records, settlement replay, model adapter foundations, marine/cloud nowcast signals, backfill/calibration records, collector health visibility, operational posture checks, paper-live tracking, optional env-token access gating, and precision dashboard/API integration. Full local validation has passed across 95 tests, Python compile checks, script syntax checks, CLI smoke checks, and FastAPI endpoint smoke checks.
+The repository is now a working local research application with a tested SQLite/FastAPI dashboard, deterministic ingestion foundations, official source/station metadata, market-rule verification records, settlement replay, model adapter foundations, marine/cloud nowcast signals, backfill/calibration records, collector and scheduler status visibility, DB ops checks, monitoring alerts/daily reports, operational posture checks, paper-live tracking, optional env-token access gating, and precision dashboard/API integration. Full local validation has passed across Python tests, compile checks, script syntax checks, CLI smoke checks, and FastAPI endpoint smoke checks.
 
 Implemented in-repository foundations include:
 
-- FastAPI dashboard and read-only APIs for observations, sources, station metadata/official observations, model runs, model spread/adapters, market snapshots, settlement replays, fusion summary, market-rule verification, collector health, weather/nowcast features, calibration/backfill summaries, paper-live status, and local ops status.
+- FastAPI dashboard and read-only APIs for observations, sources, station metadata/official observations, model runs, model spread/adapters, market snapshots, settlement replays, fusion summary, market-rule verification, collector/scheduler health, weather/nowcast features, calibration/backfill plan/run summaries, monitoring alerts/daily reports, DB health, paper-live status, and local ops status.
 - SQLite schema and repository methods for source metadata, observations, official observations, station metadata, model runs/probability buckets/extraction metadata/deltas, market snapshots, settlement replays, marine indicators, cloud features, weather-regime features, intraday features, nowcast snapshots, collector poll runs, market rules, official outcomes, prediction snapshots, backfill runs, bias summaries, calibration metrics, paper-live runs/notes/soak metrics, risk guards, and app events.
 - Public, no-secret collectors and CLI helpers for NWS Seattle forecast discussion text, Aviation Weather METAR-style observations, and api.weather.gov station observations, with retry-ready manual runs, poll records, health summaries, deterministic hashes, and injectable fetchers for tests.
 - Official station/source metadata imports and climate daily-summary imports for research fixtures and official-observation records.
 - Market-rule metadata capture plus settlement replay workflow that stores settlement source, station/product, rounding, cutoff, fallback, correction policy, reviewer, verification timestamp, replay status, mismatch reasons, payload hashes, and actionability state.
 - Forecast-model adapter foundations for manual or URL-fetched HRRR/NAM/GFS/NBM-style records, model spread persistence, run-to-run deltas, extraction metadata, probability bucket storage, and market-implied probability comparisons.
 - Weather-feature and nowcast foundations for forecast-discussion regime language, marine-layer indicators, cloud feature proxy records, fixed-hour nowcast snapshots, and remaining-upside context.
-- Historical backfill/calibration foundations for frozen fixture replay, official outcome records, prediction snapshots, train/test-aware calibration reports, bias summaries, and bucket calibration metrics.
+- Historical backfill/calibration foundations for public backfill planning, frozen fixture replay, dry-run records, official outcome records, prediction snapshots, train/test-aware calibration reports, bias summaries, and bucket calibration metrics.
 - Paper-live operations foundations for no-betting run tracking, checklists, prediction notes, postmortems, reconciliation notes, soak metrics, and readiness summaries.
-- Local security and operations hardening for loopback-first access guidance, optional `KALSHI_TEMPS_ACCESS_TOKEN` protection on `/dashboard` and `/api/*`, local database/disk/access status, backup-path generation, secrets/runtime-data exclusions, and dashboard caveats.
+- Local security and operations hardening for loopback-first access guidance, optional `KALSHI_TEMPS_ACCESS_TOKEN` protection on `/dashboard` and `/api/*`, local database/disk/access status, DB integrity/schema checks, backup verification, backup pruning dry-runs, restore preflight, scheduler locks/status, monitoring alert records/daily reports, secrets/runtime-data exclusions, and dashboard caveats.
 
 Unless implemented outside this repository and independently verified, assume the following remain **unresolved**:
 
@@ -27,7 +27,7 @@ Unless implemented outside this repository and independently verified, assume th
 - Production-grade Kalshi ingestion, order-book depth, account/portfolio integration, order placement, and feed-permission validation. Read-only market discovery/snapshot support may exist, but it is not trading automation.
 - Paid/licensed ECMWF archive/API access, GraphCast/AI weather feeds, and associated storage/license compliance.
 - Actual satellite image processing and quantitative cloud/stratus burn-off extraction from imagery.
-- Real long-running paper-live soak with scheduled collectors, retries, monitoring, alerting, backups, restore drills, and weeks of reconciliation.
+- Real long-running paper-live soak with installed/soaked scheduled collectors, retries, monitoring/alert routing, backups, restore drills, and weeks of reconciliation.
 - Sufficient historical backfill depth for reliable regime bias, market replay, or out-of-sample calibration.
 - Proven calibrated model performance across seasons, regimes, horizons, and buckets.
 - Compliance/legal review for trading-adjacent use, data licenses, exchange rules, account permissions, and organizational policy.
@@ -38,7 +38,7 @@ Unless implemented outside this repository and independently verified, assume th
 
 ### Data ingestion and operations gaps
 
-- **Collector operations are foundational, not production**: manual and one-shot collector commands can persist poll records and health summaries, but live scheduling, daemon supervision, alerting, retry policy validation, and multi-week soak are still required.
+- **Collector operations are foundational, not production**: manual and one-shot collector commands can persist poll records and health summaries, and scheduler locks/status plus systemd examples exist, but live scheduling installation, daemon supervision, alert routing, retry policy validation, and multi-week soak are still required.
 - **Kalshi data remains limited**: read-only market discovery/snapshots can persist candidate metadata and top-of-book prices, but production-grade ingestion, order-book depth, account integration, and trading controls are not implemented.
 - **Paid model feeds are unresolved**: ECMWF and GraphCast references remain external dependencies until valid licenses, endpoints, terms, and collectors exist.
 - **Satellite imagery is not processed**: cloud features can be imported as manual/proxy records, but actual image processing for cloud/stratus burn-off is not implemented.
@@ -89,7 +89,7 @@ Unless implemented outside this repository and independently verified, assume th
 
 A full local validation pass has completed:
 
-- 95 tests passed.
+- 119 tests passed.
 - Python `compileall` passed for source and tests.
 - Script syntax checks passed.
 - CLI smoke checks passed.
@@ -117,16 +117,16 @@ Implemented tests cover local foundations without requiring live network access:
 - No benchmark showing forecast error by model, regime, bucket, or time of day on sufficient historical data.
 - No calibration report proving probability outputs are reliable out of sample.
 - No production security tests for full authentication, authorization, session handling, least-privilege deployment, or accidental exposure.
-- No operational soak tests for scheduler failures, retry behavior, database locks, backups, restore, disk-full conditions, or alert fatigue.
+- No operational soak tests for scheduler failures, retry behavior, database locks, backup/restore drills, disk-full conditions, external alert routing, or alert fatigue.
 
 ## Prioritized future improvements
 
 ### P0: External verification and live operational proof
 
 - Verify market-specific settlement rules for each real ticker before actionability language is shown.
-- Add scheduled collector orchestration with tested retry/backoff, rate-limit handling, latency metrics, alerting, and idempotency.
+- Install and soak scheduled collector orchestration with tested retry/backoff, rate-limit handling, latency metrics, alert routing, and idempotency.
 - Run paper-live for multiple weeks and reconcile predictions, features, market snapshots, settlement replays, and official outcomes.
-- Extend backup/restore scripts with scheduling, migration safeguards, retention policy, disk-space checks, and restore drills.
+- Extend backup/restore operations with reviewed scheduling, migration safeguards, retention policy, disk-space checks, verified backups, pruning review, and restore drills.
 
 ### P1: Production-grade auth, deployment, and security
 

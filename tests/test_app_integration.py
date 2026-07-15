@@ -430,6 +430,10 @@ def test_new_app_endpoints_return_expected_shapes(monkeypatch) -> None:
             calibration_response = client.get("/api/calibration/summary?limit=2")
             paper_live_response = client.get("/api/paper-live/runs")
             paper_live_status_response = client.get("/api/paper-live/status")
+            scheduler_response = client.get("/api/scheduler/status")
+            db_health_response = client.get("/api/ops/db-health")
+            alerts_response = client.get("/api/monitoring/alerts")
+            daily_report_response = client.get("/api/monitoring/daily-report")
             official_response = client.get("/api/official/observations?limit=2&station_limit=2")
             adapters_response = client.get("/api/model/adapters?limit=2")
             settlement_response = client.get("/api/settlement/replays?limit=2")
@@ -460,6 +464,10 @@ def test_new_app_endpoints_return_expected_shapes(monkeypatch) -> None:
         assert calibration_response.status_code == 200
         assert paper_live_response.status_code == 200
         assert paper_live_status_response.status_code == 200
+        assert scheduler_response.status_code == 200
+        assert db_health_response.status_code == 200
+        assert alerts_response.status_code == 200
+        assert daily_report_response.status_code == 200
         assert official_response.status_code == 200
         assert adapters_response.status_code == 200
         assert settlement_response.status_code == 200
@@ -489,11 +497,17 @@ def test_new_app_endpoints_return_expected_shapes(monkeypatch) -> None:
         assert {"official_outcomes", "prediction_snapshots", "bias_summaries", "calibration_metrics"} <= set(calibration_response.json())
         assert {"paper_live_runs", "readiness"} <= set(paper_live_response.json())
         assert {"paper_live_status", "ops"} <= set(paper_live_status_response.json())
+        assert {"lock", "collector_health"} <= set(scheduler_response.json()["scheduler"])
+        assert "path" not in scheduler_response.json()["scheduler"]
+        assert {"database", "integrity", "schema"} <= set(db_health_response.json()["db_health"])
+        assert "path" not in db_health_response.json()["db_health"]["database"]
+        assert {"alert_summary", "alerts", "daily_report_link", "report_date"} <= set(alerts_response.json())
+        assert "daily_report" in daily_report_response.json()
         assert {"station_metadata", "official_observations"} <= set(official_response.json())
         assert {"model_runs", "model_extraction_metadata", "model_run_deltas", "latest_model_spread"} <= set(adapters_response.json())
         assert {"settlement_replay_summary", "settlement_replays"} <= set(settlement_response.json())
         assert {"cloud_features", "nowcast_snapshots", "marine_indicators", "intraday_features"} <= set(nowcast_response.json())
-        assert {"backfill_runs", "bias_summaries", "calibration_metrics"} <= set(backfill_response.json())
+        assert {"backfill_plans", "backfill_runs", "bias_summaries", "calibration_metrics"} <= set(backfill_response.json())
         assert "Research workflow" in dashboard_response.text
         assert "No financial advice" in dashboard_response.text
         assert "not production calibrated" in dashboard_response.text
@@ -701,12 +715,30 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
             )
             repo.compute_bias_summaries()
             repo.compute_calibration_metrics()
+            repo.save_backfill_plan(
+                {
+                    "station": "KSEA",
+                    "start_date": "2026-07-01",
+                    "end_date": "2026-07-14",
+                    "source_kind": "fixture",
+                    "plan_hash": "plan-fixture-1",
+                }
+            )
             backfill = repo.start_backfill_run(source_path="fixtures/demo", source_hash="backfill-1")
             repo.finish_backfill_run(
                 backfill["id"],
                 status="success",
                 counts={"observations_imported": 1},
                 errors=[],
+            )
+            repo.save_alert_record(
+                {
+                    "alert_key": "fixture-alert",
+                    "severity": "warn",
+                    "code": "fixture_warning",
+                    "message": "Fixture alert for dashboard rendering",
+                },
+                alert_day="2026-07-14",
             )
 
         with TestClient(app) as client:
@@ -718,6 +750,10 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
             settlement = client.get("/api/settlement/replays").json()
             nowcast = client.get("/api/nowcast/signals").json()
             backfill = client.get("/api/backfill/reports").json()
+            scheduler = client.get("/api/scheduler/status").json()
+            db_health = client.get("/api/ops/db-health").json()
+            alerts = client.get("/api/monitoring/alerts").json()
+            report = client.get("/api/monitoring/daily-report?report_date=2026-07-14").json()
             paper_status = client.get("/api/paper-live/status").json()
             calibration = client.get("/api/calibration/summary").json()
             dashboard = client.get("/dashboard")
@@ -733,7 +769,12 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
         assert settlement["settlement_replay_summary"]["matched_count"] == 1
         assert nowcast["cloud_features"][0]["burnoff_status"] == "cleared"
         assert nowcast["nowcast_snapshots"][0]["station"] == "KSEA"
+        assert backfill["backfill_plans"][0]["plan_hash"] == "plan-fixture-1"
         assert backfill["backfill_runs"][0]["status"] == "success"
+        assert scheduler["scheduler"]["lock"]["locked"] is False
+        assert db_health["db_health"]["ok"] is True
+        assert alerts["alert_summary"]["warn"] >= 1
+        assert report["daily_report"]["report_date"] == "2026-07-14"
         assert "readiness" in paper_status["paper_live_status"]
         assert calibration["bias_summaries"][0]["sample_count"] == 1
         assert calibration["calibration_metrics"][0]["sample_count"] == 1
@@ -744,6 +785,9 @@ def test_research_foundations_endpoints_and_dashboard_render(monkeypatch) -> Non
         assert "Regimes, marine/cloud, and nowcast snapshots" in dashboard.text
         assert "Backfill reports, historical bias, calibration, outcomes" in dashboard.text
         assert "Replay verification and reconciliation" in dashboard.text
+        assert "Scheduler one-shot status" in dashboard.text
+        assert "DB ops health" in dashboard.text
+        assert "Monitoring alerts/reports" in dashboard.text
     finally:
         db_path.unlink(missing_ok=True)
 
@@ -883,5 +927,18 @@ def test_kalshi_candidate_api_and_dashboard_selection(monkeypatch) -> None:
         assert dashboard.status_code == 200
         assert "Kalshi candidates" in dashboard.text
         assert "KXHIGHTEMPSEA-26JUL15-B75" in dashboard.text
+    finally:
+        db_path.unlink(missing_ok=True)
+
+
+def test_kalshi_candidate_api_selection_returns_404_for_unknown_candidate(monkeypatch) -> None:
+    db_path = _project_temp_db(monkeypatch)
+    try:
+        initialize_database(str(db_path))
+        with TestClient(app) as client:
+            response = client.post("/api/kalshi/select-market?target_date=2026-07-15&ticker=UNKNOWN")
+
+        assert response.status_code == 404
+        assert "Unknown Kalshi candidate" in response.json()["detail"]
     finally:
         db_path.unlink(missing_ok=True)

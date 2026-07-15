@@ -29,7 +29,7 @@
         <article class="card caution">
           <span class="section-label">Caveats</span>
           <strong>No financial advice · no automated trading</strong>
-          <span>This dashboard is not production calibrated. Verify official market rules and settlement sources before using any probability evidence.</span>
+          <span>This dashboard is not production calibrated or production scheduled until collectors, backups, monitoring, and paper-live soak are configured and reviewed. Verify official market rules and settlement sources before using any probability evidence.</span>
         </article>
       </section>
 
@@ -101,7 +101,25 @@
           <span class="section-label">Backfill/calibration reports</span>
           <strong>{{ backfill_runs|length }} backfills · {{ calibration_metrics|length }} calibration rows</strong>
           <small>{% if backfill_runs %}Latest {{ backfill_runs[0].status }} · {{ backfill_runs[0].started_at }}{% else %}No backfill report yet{% endif %}</small>
-          <small><a href="/api/backfill/reports">Backfill report JSON</a></small>
+          <small><a href="/api/backfill/reports">Backfill plan/run JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">Scheduler one-shot status</span>
+          <strong>{{ scheduler.collector_health|length if scheduler else 0 }} collectors · lock {{ 'held' if scheduler and scheduler.lock.locked else 'clear' }}</strong>
+          <small>{% if scheduler and scheduler.lock.locked %}Lock age {{ "%.0f"|format(scheduler.lock.age_seconds or 0) }}s · stale {{ 'yes' if scheduler.lock.stale else 'no' }}{% else %}No active scheduler lock detected{% endif %}</small>
+          <small><a href="/api/scheduler/status">Scheduler status JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">DB ops health</span>
+          <strong>{{ 'OK' if db_health and db_health.ok else 'Needs review' }}</strong>
+          <small>{% if db_health and db_health.integrity %}{{ db_health.integrity.check }} {{ db_health.integrity.result or 'not run' }} · schema {{ 'matched' if db_health.schema.fingerprint_match else 'review' }}{% else %}Database check unavailable{% endif %}</small>
+          <small><a href="/api/ops/db-health">DB checks and backup command JSON</a></small>
+        </article>
+        <article class="card compact-card precision-card">
+          <span class="section-label">Monitoring alerts/reports</span>
+          <strong>{{ alert_summary.fail if alert_summary else 0 }} fail · {{ alert_summary.warn if alert_summary else 0 }} warn</strong>
+          <small>Daily report remains evidence-only and does not authorize trading automation.</small>
+          <small><a href="/api/monitoring/alerts">Alerts JSON</a> · <a href="/api/monitoring/daily-report">Daily report JSON</a></small>
         </article>
         <article class="card compact-card precision-card">
           <span class="section-label">Paper-live/auth posture</span>
@@ -344,10 +362,20 @@
             <h2>Backfill reports, historical bias, calibration, outcomes</h2>
           </div>
           <div class="list">
+            {% for plan in backfill_plans %}
+              <div class="row">
+                <div>
+                  <strong>Plan {{ plan.station }} {{ plan.start_date }}→{{ plan.end_date }}</strong>
+                  <small>{{ plan.source_kind }} · hash {{ plan.plan_hash[:10] if plan.plan_hash else 'unhashed' }}</small>
+                  <small>Historical public backfill plan; run with fixtures/dry-run before importing live-scale data.</small>
+                </div>
+                <span class="badge neutral">plan</span>
+              </div>
+            {% endfor %}
             {% for run in backfill_runs %}
               <div class="row">
                 <div>
-                  <strong>Backfill {{ run.status }}</strong>
+                  <strong>Backfill {{ run.status }}{% if run.dry_run %} · dry run{% endif %}</strong>
                   <small>{{ run.source_path }} · {{ run.started_at }}</small>
                   <small>Counts {{ run.counts }} · errors {{ run.errors|length }}</small>
                 </div>
@@ -498,10 +526,40 @@
 
         <article class="card feature-card">
           <div class="section-heading">
-            <span class="section-label">Audit</span>
-            <h2>Risk guards and source events</h2>
+            <span class="section-label">Audit and hardening</span>
+            <h2>Risk guards, monitoring alerts, DB checks, and source events</h2>
           </div>
           <div class="list">
+            {% if db_health %}
+              <div class="row audit-row">
+                <div>
+                  <strong>Database ops health</strong>
+                  <small>Integrity {{ db_health.integrity.result or 'unknown' }} · schema {{ 'matched' if db_health.schema.fingerprint_match else 'needs review' }}</small>
+                  <small>Use backup verify/prune/restore preflight commands before destructive operations.</small>
+                </div>
+                <span class="badge {{ 'good' if db_health.ok else 'bad' }}">{{ 'ok' if db_health.ok else 'review' }}</span>
+              </div>
+            {% endif %}
+            {% if scheduler %}
+              <div class="row audit-row">
+                <div>
+                  <strong>Scheduler one-shot runner</strong>
+                  <small>Lock {{ 'held' if scheduler.lock.locked else 'clear' }} · {{ scheduler.collector_health|length }} collector health rows</small>
+                  <small>systemd examples are documentation-only until installed, configured, and soaked.</small>
+                </div>
+                <span class="badge {{ 'bad' if scheduler.lock.locked and scheduler.lock.stale else 'good' }}">{{ 'stale lock' if scheduler.lock.locked and scheduler.lock.stale else 'status' }}</span>
+              </div>
+            {% endif %}
+            {% for alert in alerts %}
+              <div class="row audit-row">
+                <div>
+                  <strong>{{ alert.code }}</strong>
+                  <small>{{ alert.alert_day }} · {{ alert.status }} · {{ alert.source_name or 'global' }}</small>
+                  <small>{{ alert.message }}</small>
+                </div>
+                <span class="badge {{ 'bad' if alert.severity == 'fail' else ('neutral' if alert.severity == 'info' else 'bad') }}">{{ alert.severity }}</span>
+              </div>
+            {% endfor %}
             {% if fusion_summary and fusion_summary.risk_guards %}
               {% for guard in fusion_summary.risk_guards %}
                 <div class="row audit-row">

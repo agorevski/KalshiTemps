@@ -13,7 +13,7 @@ This roadmap is for maximizing the accuracy and precision of Seattle daily high-
 
 ## Status summary
 
-In-repository foundations are now implemented for settlement replay, official source and station metadata, model adapters, marine/cloud nowcast records, backfill/calibration records, paper-live tracking, optional token-gated local access, and dashboard/API integration. The remaining acceptance criteria still require external dependencies: user-verified market-specific rules, live Kalshi credentials/feed permissions, paid ECMWF/GraphCast licensing, actual satellite image processing, sufficient historical backfill, proven calibrated model performance, long-running paper-live soak, compliance/legal review, and production-grade auth/deployment.
+In-repository foundations are now implemented for settlement replay, official source and station metadata, model adapters, marine/cloud nowcast records, historical backfill plans/runs/dry-run fixture replay, scheduler one-shot status, DB ops checks, monitoring alerts/daily reports, paper-live tracking, optional token-gated local access, and dashboard/API integration. The remaining acceptance criteria still require external dependencies: user-verified market-specific rules, live Kalshi credentials/feed permissions, paid ECMWF/GraphCast licensing, actual satellite image processing, sufficient historical backfill, proven calibrated model performance, configured/soaked production scheduling, long-running paper-live soak, compliance/legal review, and production-grade auth/deployment.
 
 ## Ordered roadmap
 
@@ -57,12 +57,13 @@ Still required:
 
 Implemented foundations:
 
-- Public NWS discussion, Aviation Weather METAR, and api.weather.gov station observation collectors can run as explicit one-shot commands with poll records, payload hashes, and health summaries.
+- Public NWS discussion, Aviation Weather METAR, and api.weather.gov station observation collectors can run as explicit one-shot commands with poll records, payload hashes, health summaries, scheduler locks, and `/api/scheduler/status` visibility.
 - Station metadata imports support KSEA/proxy network context.
+- systemd service/timer examples document one-shot collector operation but are not installed by the repository.
 
 Still required:
 
-- Production scheduling, retries/backoff, monitoring, alerting, broad fixture replay, and nearby ASOS/AWOS coverage depth.
+- Actual production scheduling installation, retry/backoff tuning, monitoring soak, broad fixture replay, and nearby ASOS/AWOS coverage depth.
 - Confirmation that the collected product is the verified settlement product for each market.
 - PWS data must remain out of primary models unless independently calibrated and quality controlled.
 
@@ -109,9 +110,10 @@ Still required:
 
 Implemented foundations:
 
-- `run-backfill` replays frozen JSON/CSV fixture bundles into SQLite and records `backfill_runs` summaries.
+- `create-backfill-plan` records historical public backfill plans, and `run-backfill` replays frozen JSON/CSV fixture bundles or planned sources into SQLite with dry-run support and `backfill_runs` summaries.
 - `compute-calibration` supports split-date/gap parameters; `calibration-report` exports JSON reports.
 - Bias and bucket calibration tables can be computed from stored outcomes and prediction snapshots.
+- `/api/backfill/reports` and the dashboard show backfill plans/runs alongside bias/calibration rows.
 
 Still required:
 
@@ -137,6 +139,7 @@ Implemented foundations:
 - `paper_live_runs`, checklist entries, prediction notes, reconciliation/postmortem notes, and soak metrics are persisted.
 - CLI/API support exists through `start-paper-live-run`, `list-paper-live-runs`, `close-paper-live-run`, `record-paper-live-checklist`, `record-paper-live-prediction-note`, `record-paper-live-postmortem`, `record-paper-live-soak-metric`, `/api/paper-live/status`, and `/api/paper-live/runs`.
 - Ops helpers summarize paper-live readiness and explicitly keep automated betting disabled.
+- Monitoring commands (`run-monitoring-checks`, `list-alerts`, `resolve-alert`, `export-daily-report`) and dashboard/API cards surface unresolved alerts and daily report links.
 
 Still required:
 

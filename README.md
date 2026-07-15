@@ -10,7 +10,8 @@ SQLite/FastAPI flows, public weather collectors, station metadata, read-only
 Kalshi market discovery/snapshots, market-rule verification, settlement replay,
 forecast-model adapter foundations, marine/cloud nowcast signals,
 backfill/calibration records, collector health, paper-live tracking, token-gated
-local access, and precision dashboard/API integration. It still depends on
+local access, scheduler status, DB health checks, monitoring alerts/reports,
+and precision dashboard/API integration. It still depends on
 external work for real market-specific rule verification by the user,
 production-grade Kalshi ingestion/order-book depth, paid ECMWF or GraphCast
 licensing, actual satellite image processing, sufficient historical backfill,
@@ -40,9 +41,9 @@ Implemented in this repository:
 - Health endpoints at `/health` and `/health/json`.
 - JSON endpoints for observations, sources, official observations/station
   metadata, model runs, model spread/adapters, settlement replays, market
-  snapshots, fusion summary, market verification, collector health, weather and
-  nowcast signals, calibration/backfill summaries, paper-live status, and ops
-  status.
+  snapshots, fusion summary, market verification, collector/scheduler health,
+  weather and nowcast signals, calibration/backfill plans/runs, monitoring
+  alerts/daily reports, paper-live status, DB health, and ops status.
 - SQLite schema initialization and lightweight migration helpers.
 - Repository methods for sources, observations, official observations, station
   metadata, collectors, market rules, settlement replays, model runs/adapters,
@@ -54,8 +55,10 @@ Implemented in this repository:
   observation collector foundations plus station/official-observation imports.
 - CLI workflows for market-rule records, settlement replay, manual/adapted model
   forecast imports, feature extraction, cloud/nowcast records, collector health,
-  local ops status, official outcomes, backfill, prediction snapshots,
-  calibration reports, and paper-live run notes/soak metrics.
+  local ops status, scheduler one-shot status, DB check/backup verification,
+  backup pruning/restore preflight, official outcomes, backfill planning/runs,
+  prediction snapshots, calibration reports, monitoring alerts/daily reports,
+  and paper-live run notes/soak metrics.
 - Pure utilities for METAR-like observation normalization, forecast-discussion
   normalization, model-high normalization, market snapshot normalization,
   provenance hashes, freshness checks, model spread, feature extraction, and
@@ -198,6 +201,8 @@ python -m kalshi_temps run-collectors
 python -m kalshi_temps collect-nws-discussion
 python -m kalshi_temps collect-metar --station KSEA
 python -m kalshi_temps collect-nws-observation --station KSEA
+python -m kalshi_temps run-scheduled-collectors --collectors nws_discussion,metar --dry-run
+python -m kalshi_temps scheduler-status
 python -m kalshi_temps collector-runs
 
 # Add/list/verify market settlement-rule metadata
@@ -228,7 +233,9 @@ python -m kalshi_temps generate-nowcast-snapshots
 # Record outcomes, replay settlement, run backfill, and compute calibration reports
 python -m kalshi_temps record-official-outcome --target-date YYYY-MM-DD --high-temperature-f 75
 python -m kalshi_temps replay-settlement <TICKER> --target-date YYYY-MM-DD
+python -m kalshi_temps create-backfill-plan --station KSEA --start-date YYYY-MM-DD --end-date YYYY-MM-DD --persist
 python -m kalshi_temps run-backfill <fixture-dir-or-file>
+python -m kalshi_temps run-backfill --plan-file data/backfill-plan.json --dry-run
 python -m kalshi_temps record-prediction-snapshot --model-name manual --target-date YYYY-MM-DD
 python -m kalshi_temps compute-calibration
 python -m kalshi_temps calibration-report --output data/calibration-report.json
@@ -242,6 +249,15 @@ python -m kalshi_temps list-paper-live-runs
 # Inspect collector and local ops posture
 python -m kalshi_temps collector-health
 python -m kalshi_temps ops-status
+python -m kalshi_temps db-check
+python -m kalshi_temps verify-backup data/backups/<backup>.sqlite3
+python -m kalshi_temps prune-backups --dry-run
+scripts/restore_sqlite.sh --backup data/backups/<backup>.sqlite3 --db data/restore-test.sqlite3
+
+# Persist monitoring alerts and export a daily report
+python -m kalshi_temps run-monitoring-checks
+python -m kalshi_temps list-alerts
+python -m kalshi_temps export-daily-report --output data/daily-report.md --format markdown
 
 # Run the local app on loopback
 uvicorn kalshi_temps.app:app --host 127.0.0.1 --port 8000
@@ -347,7 +363,7 @@ PYTHONPATH=src python -m compileall -q src tests
 PYTHONPATH=src pytest
 ```
 
-Current validation has passed for 95 tests plus compileall, script syntax, CLI
+Current validation has passed for 119 tests plus compileall, script syntax, CLI
 smoke, and FastAPI endpoint smoke checks. Tests cover:
 
 - SQLite initialization, seeding, repository flows, CLI smoke checks, and app

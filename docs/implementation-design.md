@@ -28,7 +28,7 @@ The application now exposes foundations for a six-layer data-fusion workflow, wi
 
 ## Implementation status
 
-The current repository has passed full local validation: 95 tests, Python compile checks, script syntax checks, CLI smoke checks, and FastAPI endpoint smoke checks. Implemented foundations include:
+The current repository has passed full local validation: 119 tests, Python compile checks, script syntax checks, CLI smoke checks, and FastAPI endpoint smoke checks. Implemented foundations include:
 
 - SQLite/FastAPI dashboard and read-only APIs for the main research workflow.
 - Market-rule metadata capture, verification records, and deterministic settlement replay against official outcomes.

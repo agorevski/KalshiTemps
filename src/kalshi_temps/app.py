@@ -4,15 +4,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .auth import access_gate
 from .db import connection, database_path, initialize_database
-from .ops import ops_status, paper_live_readiness, paper_live_run_status
+from .ops import db_check, ops_status, paper_live_readiness, paper_live_run_status
 from .repository import WeatherRepository
+from .scheduler import scheduler_status
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,11 +58,36 @@ def health() -> dict[str, str]:
 @app.get("/api/ops/status")
 def api_ops_status() -> dict[str, object]:
     status = ops_status()
-    database = dict(status["database"])
-    database.pop("path", None)
-    disk = dict(status["disk"])
-    disk.pop("path", None)
+    database = _without_local_paths(status["database"])
+    disk = _without_local_paths(status["disk"])
     return {"status": "ok", "ops": {"database": database, "disk": disk, "access": status["access"]}}
+
+
+@app.get("/api/ops/db-health")
+def api_ops_db_health(quick: bool = True) -> dict[str, object]:
+    health = _without_local_paths(db_check(quick=quick))
+    return {
+        "status": "ok" if health["ok"] else "needs_review",
+        "db_health": health,
+        "backup_operations": {
+            "check_command": "python -m kalshi_temps db-check",
+            "backup_command": "scripts/backup_sqlite.sh",
+            "verify_backup_command": "python -m kalshi_temps verify-backup data/backups/<backup>.sqlite3",
+            "prune_dry_run_command": "python -m kalshi_temps prune-backups --dry-run",
+            "restore_preflight_command": "scripts/restore_sqlite.sh --backup data/backups/<backup>.sqlite3 --db data/restore-test.sqlite3",
+            "note": "Restore and prune commands are intentionally operator-triggered; run preflight/dry-run before overwriting or deleting files.",
+        },
+    }
+
+
+@app.get("/api/scheduler/status")
+def api_scheduler_status(max_age_minutes: float = Query(default=180, ge=1)) -> dict[str, object]:
+    status = _without_local_paths(scheduler_status(max_age_minutes=max_age_minutes))
+    return {
+        "status": "ok",
+        "scheduler": status,
+        "note": "One-shot scheduler status is local operational evidence only; configure and soak systemd/cron separately before treating it as production.",
+    }
 
 
 @app.get("/api/paper-live/runs")
@@ -97,6 +123,31 @@ def api_paper_live_status(include_closed: bool = False, limit: int = Query(defau
     return {"paper_live_status": {"runs": runs, "readiness": readiness}, "ops": api_ops_status()["ops"]}
 
 
+@app.get("/api/monitoring/alerts")
+def api_monitoring_alerts(
+    include_resolved: bool = False,
+    severity: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, object]:
+    with connection() as conn:
+        repo = WeatherRepository(conn)
+        alerts = repo.list_alert_records(include_resolved=include_resolved, severity=severity, limit=limit)
+        report = repo.daily_monitoring_report()
+    return {
+        "alert_summary": _alert_counts(alerts),
+        "alerts": alerts,
+        "daily_report_link": "/api/monitoring/daily-report",
+        "report_date": report["report_date"],
+    }
+
+
+@app.get("/api/monitoring/daily-report")
+def api_monitoring_daily_report(report_date: str | None = None) -> dict[str, object]:
+    with connection() as conn:
+        report = WeatherRepository(conn).daily_monitoring_report(report_date=report_date)
+    return {"daily_report": report}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request) -> HTMLResponse:
     with connection() as conn:
@@ -130,10 +181,15 @@ def dashboard(request: Request) -> HTMLResponse:
         paper_live_runs = repo.list_paper_live_runs(include_closed=True, limit=5)
         bias_summaries = repo.list_bias_summaries(limit=5)
         calibration_metrics = repo.list_calibration_metrics(limit=5)
+        backfill_plans = repo.list_backfill_plans(limit=4)
         backfill_runs = repo.list_backfill_runs(limit=4)
+        alerts = repo.list_alert_records(limit=5)
+        alert_summary = _alert_counts(alerts)
         events = repo.list_events(limit=6)
         fusion_summary = repo.fusion_summary()
         ops = api_ops_status()["ops"]
+    scheduler = _without_local_paths(scheduler_status(max_age_minutes=180))
+    db_health = api_ops_db_health()["db_health"]
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -167,7 +223,12 @@ def dashboard(request: Request) -> HTMLResponse:
             "paper_live_runs": paper_live_runs,
             "bias_summaries": bias_summaries,
             "calibration_metrics": calibration_metrics,
+            "backfill_plans": backfill_plans,
             "backfill_runs": backfill_runs,
+            "scheduler": scheduler,
+            "db_health": db_health,
+            "alert_summary": alert_summary,
+            "alerts": alerts,
             "events": events,
             "fusion_summary": fusion_summary,
             "ops": ops,
@@ -241,11 +302,14 @@ def api_kalshi_selected_market(target_date: str | None = None) -> dict[str, obje
 @app.post("/api/kalshi/select-market")
 def api_kalshi_select_market(target_date: str, ticker: str, notes: str | None = None) -> dict[str, object]:
     with connection() as conn:
-        selected = WeatherRepository(conn).select_kalshi_market_candidate(
-            target_date=target_date,
-            ticker=ticker,
-            notes=notes,
-        )
+        try:
+            selected = WeatherRepository(conn).select_kalshi_market_candidate(
+                target_date=target_date,
+                ticker=ticker,
+                notes=notes,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
         "selected_kalshi_market": selected,
         "note": "Selection is local research state only; no bet was placed and settlement rules remain manually verified.",
@@ -381,7 +445,30 @@ def api_calibration_summary(limit: int = Query(default=50, ge=1, le=500)) -> dic
 def api_backfill_reports(limit: int = Query(default=20, ge=1, le=200)) -> dict[str, object]:
     with connection() as conn:
         repo = WeatherRepository(conn)
+        plans = repo.list_backfill_plans(limit=limit)
         runs = repo.list_backfill_runs(limit=limit)
         bias = repo.list_bias_summaries(limit=limit)
         calibration = repo.list_calibration_metrics(limit=limit)
-    return {"backfill_runs": runs, "bias_summaries": bias, "calibration_metrics": calibration}
+    return {"backfill_plans": plans, "backfill_runs": runs, "bias_summaries": bias, "calibration_metrics": calibration}
+
+
+def _without_local_paths(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_local_paths(item)
+            for key, item in value.items()
+            if key not in {"path", "db_path", "backup", "target", "backup_dir", "candidates", "deleted"}
+        }
+    if isinstance(value, list):
+        return [_without_local_paths(item) for item in value]
+    return value
+
+
+def _alert_counts(alerts: list[dict[str, object]]) -> dict[str, int]:
+    return {
+        "total": len(alerts),
+        "fail": sum(1 for alert in alerts if alert["severity"] == "fail"),
+        "warn": sum(1 for alert in alerts if alert["severity"] == "warn"),
+        "info": sum(1 for alert in alerts if alert["severity"] == "info"),
+        "resolved": sum(1 for alert in alerts if alert["status"] == "resolved"),
+    }
