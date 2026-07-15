@@ -207,7 +207,11 @@ def find_seattle_temperature_candidates(
     target = date.fromisoformat(target_date).isoformat()
     captured = captured_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     candidates = [normalize_kalshi_market_candidate(market, target_date=target, captured_at=captured) for market in markets]
-    filtered = [candidate for candidate in candidates if candidate["rank_score"] > 0]
+    filtered = [
+        candidate
+        for candidate in candidates
+        if candidate["rank_score"] > 0 and candidate["seattle_match"] and candidate["temperature_language_match"]
+    ]
     return sorted(filtered, key=lambda item: (-item["rank_score"], item["ticker"]))
 
 
@@ -227,13 +231,18 @@ def normalize_kalshi_market_candidate(
     target_tokens = _target_date_tokens(target)
     reasons: list[str] = []
     score = 0
-    if any(token in text for token in ("seattle", "seatac", "sea-tac", "ksea")):
+    seattle_match = any(token in text for token in ("seattle", "seatac", "sea-tac", "ksea"))
+    temperature_language_match = any(
+        token in text for token in ("temperature", "high temp", "daily high", "weather", "climate")
+    )
+    date_match = any(token.lower() in text for token in target_tokens)
+    if seattle_match:
         score += 45
         reasons.append("Seattle/KSEA language matched")
-    if any(token in text for token in ("temperature", "high temp", "daily high", "weather", "climate")):
+    if temperature_language_match:
         score += 30
         reasons.append("temperature/climate language matched")
-    if any(token.lower() in text for token in target_tokens):
+    if date_match:
         score += 25
         reasons.append("target date language matched")
     close_time = _text(market.get("close_time"))
@@ -277,6 +286,10 @@ def normalize_kalshi_market_candidate(
         "captured_at": captured,
         "raw_payload": dict(market),
         "raw_payload_hash": provenance_hash(market),
+        "seattle_match": seattle_match,
+        "date_match": date_match,
+        "temperature_language_match": temperature_language_match,
+        "settlement_rule_presence": bool(rules_primary or rules_secondary),
     }
 
 

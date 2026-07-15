@@ -847,3 +847,41 @@ def test_cli_smoke_init_db_and_seed_demo_against_project_temp_db() -> None:
             assert repo.fusion_summary()["bucket_deltas"]
     finally:
         db_path.unlink(missing_ok=True)
+
+
+def test_kalshi_candidate_api_and_dashboard_selection(monkeypatch) -> None:
+    db_path = _project_temp_db(monkeypatch)
+    try:
+        initialize_database(str(db_path))
+        with connection(str(db_path)) as conn:
+            repo = WeatherRepository(conn)
+            repo.save_kalshi_market_candidate(
+                {
+                    "target_date": "2026-07-15",
+                    "ticker": "KXHIGHTEMPSEA-26JUL15-B75",
+                    "title": "Will Seattle's high temperature be above 75°F on July 15?",
+                    "status": "active",
+                    "captured_at": "2026-07-14T20:00:00+00:00",
+                    "rank_score": 100,
+                    "rank_reasons": ["Seattle/KSEA language matched"],
+                    "raw_payload_hash": "abc123",
+                    "raw_payload": {"ticker": "KXHIGHTEMPSEA-26JUL15-B75"},
+                }
+            )
+
+        with TestClient(app) as client:
+            candidates = client.get("/api/kalshi/market-candidates?target_date=2026-07-15").json()
+            selected_response = client.post(
+                "/api/kalshi/select-market?target_date=2026-07-15&ticker=KXHIGHTEMPSEA-26JUL15-B75"
+            )
+            selected = client.get("/api/kalshi/selected-market?target_date=2026-07-15").json()
+            dashboard = client.get("/dashboard")
+
+        assert candidates["kalshi_market_candidates"][0]["ticker"] == "KXHIGHTEMPSEA-26JUL15-B75"
+        assert selected_response.status_code == 200
+        assert selected["selected_kalshi_market"]["selected"] is True
+        assert dashboard.status_code == 200
+        assert "Kalshi candidates" in dashboard.text
+        assert "KXHIGHTEMPSEA-26JUL15-B75" in dashboard.text
+    finally:
+        db_path.unlink(missing_ok=True)

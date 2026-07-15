@@ -1262,6 +1262,10 @@ class WeatherRepository:
             candidate.get("implied_probability"),
             int(candidate.get("rank_score") or 0),
             rank_reasons,
+            int(bool(candidate.get("seattle_match"))),
+            int(bool(candidate.get("date_match"))),
+            int(bool(candidate.get("temperature_language_match"))),
+            int(bool(candidate.get("settlement_rule_presence"))),
             candidate.get("source_url"),
             candidate["captured_at"],
             candidate["raw_payload_hash"],
@@ -1274,10 +1278,11 @@ class WeatherRepository:
                 no_sub_title, status, market_type, open_time, close_time,
                 expiration_time, rules_primary, rules_secondary, yes_bid_cents,
                 yes_ask_cents, no_bid_cents, no_ask_cents, last_price_cents,
-                implied_probability, rank_score, rank_reasons, source_url,
-                captured_at, raw_payload_hash, raw_payload
+                implied_probability, rank_score, rank_reasons, seattle_match,
+                date_match, temperature_language_match, settlement_rule_presence,
+                source_url, captured_at, raw_payload_hash, raw_payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(target_date, ticker) DO UPDATE SET
                 event_ticker = excluded.event_ticker,
                 title = excluded.title,
@@ -1299,6 +1304,10 @@ class WeatherRepository:
                 implied_probability = excluded.implied_probability,
                 rank_score = excluded.rank_score,
                 rank_reasons = excluded.rank_reasons,
+                seattle_match = excluded.seattle_match,
+                date_match = excluded.date_match,
+                temperature_language_match = excluded.temperature_language_match,
+                settlement_rule_presence = excluded.settlement_rule_presence,
                 source_url = excluded.source_url,
                 captured_at = excluded.captured_at,
                 raw_payload_hash = excluded.raw_payload_hash,
@@ -2528,6 +2537,8 @@ def _decode_kalshi_candidate(row: sqlite3.Row) -> dict[str, Any]:
             except json.JSONDecodeError:
                 decoded[field] = default
     decoded["selected"] = bool(decoded.get("selected"))
+    for field in ("seattle_match", "date_match", "temperature_language_match", "settlement_rule_presence"):
+        decoded[field] = bool(decoded.get(field))
     return decoded
 
 
