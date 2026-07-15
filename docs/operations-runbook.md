@@ -19,9 +19,12 @@ Run collectors manually and keep provenance labels clear:
 ```bash
 PYTHONPATH=src python -m kalshi_temps collect-nws-discussion
 PYTHONPATH=src python -m kalshi_temps collect-metar --station KSEA
+PYTHONPATH=src python -m kalshi_temps run-collectors
+PYTHONPATH=src python -m kalshi_temps collector-runs
+PYTHONPATH=src python -m kalshi_temps collector-health
 ```
 
-Treat failed, stale, demo, proxy, or manually edited records as research-only until source and settlement rules are verified.
+Treat failed, stale, demo, proxy, imported, or manually edited records as research-only until source, provenance, and settlement rules are verified. Use `extract-weather-features`, `import-model-highs`, `record-official-outcome`, `record-prediction-snapshot`, and `compute-calibration` as manual local workflows, not as proof of production calibration.
 
 ## Backups
 

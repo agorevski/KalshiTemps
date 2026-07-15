@@ -1,6 +1,6 @@
 # Kalshi Temps documentation
 
-This documentation ties together the current Kalshi Temps project: a Python FastAPI application, SQLite logging, public weather collector foundations, market-rule verification records, local research dashboard, calibration scaffolding, and optional private remote access over Tailscale.
+This documentation ties together the current Kalshi Temps project: a Python FastAPI application, SQLite logging, public weather collector foundations, market-rule verification records, local research dashboard, calibration scaffolding, and optional private remote access over Tailscale. Start with [current-progress.md](current-progress.md) for the implementation inventory; use roadmap documents for future or unresolved work.
 
 ## Quick start
 
@@ -23,6 +23,14 @@ Open:
 - FastAPI docs: <http://127.0.0.1:8000/docs>
 
 You can also start the local app with `./scripts/run_local.sh`.
+
+
+## Current status vs roadmap
+
+- [Current implementation progress](current-progress.md) is the audited inventory of what exists now, including modules, storage, CLI, API/dashboard surfaces, validation status, and product boundary.
+- [Product shortcomings and roadmap](shortcomings-and-roadmap.md) is the conservative gap list and future-work plan. Do not treat roadmap items as implemented.
+- [High-precision Seattle temperature signal roadmap](high-precision-roadmap.md) is the ordered plan for improving settlement-source discipline, KSEA/proxy station quality, intraday nowcasting, historical backfill, and calibrated bucket accuracy.
+- Current status: local research support with public/manual collectors and foundations. Not financial advice, not guaranteed arbitrage, not automated betting, and not a production-calibrated trading system. Settlement rules must be verified per market.
 
 ## Research plan
 
@@ -59,7 +67,7 @@ Recommended local database path:
 ./data/kalshi_temps.sqlite3
 ```
 
-Recommended environment variable, if supported by the app:
+Recommended environment variable:
 
 ```bash
 export KALSHI_TEMPS_DB=./data/kalshi_temps.sqlite3

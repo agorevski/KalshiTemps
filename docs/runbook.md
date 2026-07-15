@@ -5,8 +5,8 @@ This runbook is for operating the current local Kalshi Temps research scaffold. 
 ## Operating assumptions
 
 - The project is a local FastAPI + SQLite research tool for Seattle daily high-temperature evidence.
-- The current repository supports local database initialization, demo data, a dashboard, API routes, normalizers, and documented ingestion stubs.
-- Unless independently implemented and verified elsewhere, assume there is no scheduled live weather ingestion, live Kalshi market feed, authentication, production deployment, or automated trading.
+- The current repository supports local database initialization, demo data, a dashboard, API routes, normalizers, market-rule records, manual public NWS/METAR collectors, model imports, weather-feature extraction, collector health, and calibration scaffolding.
+- Unless independently implemented and verified elsewhere, assume there is no production scheduled weather ingestion, live Kalshi market feed, authentication, production deployment, or automated trading.
 - Dashboard output is research and recordkeeping only. It is not financial advice and must not be treated as a trade instruction.
 
 ## Prerequisites
@@ -111,7 +111,7 @@ Open:
 - API docs: <http://127.0.0.1:8000/docs>
 - Health: <http://127.0.0.1:8000/health/json>
 
-Health should return JSON with `status: ok`, `service: kalshi-temps`, and non-sensitive database status. Use `kalshi-temps ops-status` locally when you need the full configured path.
+Health should return JSON with `status: ok`, `service: kalshi-temps`, and non-sensitive database status. Use `PYTHONPATH=src python -m kalshi_temps ops-status` locally when you need the full configured path.
 
 ## Validation checks
 
@@ -154,7 +154,7 @@ Do not treat a dashboard value or probability as actionable unless the market-sp
 - Rounding, correction, outage, and fallback rules.
 - Rule text URL or captured source plus verification timestamp.
 
-Current repository guard status is intentionally conservative: repository code treats settlement-source verification as false and surfaces stale/source/proxy/model-spread guards in the research summary. Keep that posture until verified live ingestion and rule records exist.
+Current repository guard status is intentionally conservative: the default is not actionable until a market-specific rule record is complete and verified; stale/source/proxy/model-spread guards are surfaced in the research summary. Keep that posture until verified live ingestion and rule records are proven in paper-live operation.
 
 ## Backups and restore
 

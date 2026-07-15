@@ -2,6 +2,8 @@
 
 This document is the honest gap list for Kalshi Temps. It separates the high-quality local implementation now present in this repository from the risks that still block production or trading-adjacent reliance. It is intentionally conservative: the project must not imply arbitrage, guaranteed edge, financial advice, or suitability for automated trading.
 
+For a more detailed accuracy-focused plan for Seattle daily high-temperature signals, including settlement reconciliation, station/source discipline, intraday nowcasting, historical backfill, and calibrated bucket probabilities, see [high-precision-roadmap.md](high-precision-roadmap.md).
+
 ## Current product boundary
 
 The repository is now a working local research application with a tested SQLite/FastAPI dashboard, deterministic ingestion foundations, market-rule verification records, weather-feature extraction, collector health visibility, operational posture checks, and historical-calibration scaffolding. Full local validation has passed across 67 tests, Python compile checks, script syntax checks, CLI smoke checks, and FastAPI endpoint smoke checks.
@@ -131,7 +133,7 @@ A fully integrated research product should still be validated in staged modes:
 
 - Add scheduled collector orchestration with tested retry/backoff, rate-limit handling, latency metrics, alerting, and idempotency.
 - Run paper-live for multiple weeks and reconcile predictions, features, market snapshots, and official outcomes.
-- Add backup/restore automation, migration safeguards, retention policy, disk-space checks, and restore drills.
+- Extend the existing backup/restore scripts with scheduling, migration safeguards, retention policy, disk-space checks, and restore drills.
 - Record operator notes, source failures, stale-data incidents, and postmortems.
 
 ### P1: Authenticated access and security

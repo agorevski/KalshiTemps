@@ -17,7 +17,7 @@ Core principles:
 
 ## Six-layer product architecture
 
-The application should expose a six-layer data-fusion workflow end to end:
+The application now exposes foundations for a six-layer data-fusion workflow, with production depth still pending:
 
 1. **Raw model disagreement**: store HRRR, NAM, GFS, ECMWF where licensed, NBM, and other guidance as separate model runs. Compute spread and disagreement explicitly; wide spread should reduce confidence and trigger review.
 2. **Marine-layer timing**: track morning stratus, cloud ceiling, satellite trend, wind shift, dew point, pressure, solar radiation, and whether marine clouds cleared before 10 AM. Seattle highs can hinge on burn-off timing.
@@ -49,8 +49,8 @@ The FastAPI process is the local application shell. It should own request routin
 Current responsibilities:
 
 - Initialize SQLite on startup.
-- Serve `/dashboard` for the human-facing research dashboard.
-- Serve read-only JSON endpoints for observations, sources, fusion summary, model runs/spread, market snapshots, market verification, collector health, weather features, calibration summaries, and local ops status.
+- Serve `/` as a redirect and `/dashboard` for the human-facing research dashboard.
+- Serve read-only JSON endpoints for observations, sources, fusion summary, model runs/spread, market snapshots, market verification, collector health, weather features, calibration summaries, and local ops status (`/api/ops/status`).
 - Keep request handlers thin: validate query parameters, open a database connection, call repository/service objects, and render responses.
 - Avoid embedding data-ingestion or forecasting logic directly in route functions.
 

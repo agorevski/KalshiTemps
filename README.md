@@ -68,7 +68,10 @@ Remaining unresolved risks:
   out of scope.
 
 See [docs/shortcomings-and-roadmap.md](docs/shortcomings-and-roadmap.md) for the
-honest gap list and phased roadmap.
+honest gap list and phased roadmap. See
+[docs/high-precision-roadmap.md](docs/high-precision-roadmap.md) for the ordered
+plan to improve Seattle temperature signal precision, settlement reconciliation,
+intraday nowcasting, and calibrated bucket accuracy.
 
 ## Quickstart
 
@@ -144,14 +147,23 @@ python -m kalshi_temps init-db --seed
 
 # Run public weather collectors once, recording poll health
 python -m kalshi_temps run-collectors
+python -m kalshi_temps collect-nws-discussion
+python -m kalshi_temps collect-metar --station KSEA
+python -m kalshi_temps collector-runs
 
 # Add/list/verify market settlement-rule metadata
 python -m kalshi_temps add-market-rule --help
 python -m kalshi_temps verify-market-rule <TICKER> --verified-by <NAME>
 python -m kalshi_temps list-market-rules
 
-# Import manual model highs and compute/view calibration scaffolding
-python -m kalshi_temps import-model-highs <file.json-or.csv>
+# Import manual model highs, inspect spread, and extract weather features
+python -m kalshi_temps import-model-highs <file.json-or-csv>
+python -m kalshi_temps list-model-spread
+python -m kalshi_temps extract-weather-features
+
+# Record outcomes/prediction snapshots and compute calibration scaffolding
+python -m kalshi_temps record-official-outcome --target-date YYYY-MM-DD --high-temperature-f 75
+python -m kalshi_temps record-prediction-snapshot --model-name manual --target-date YYYY-MM-DD
 python -m kalshi_temps compute-calibration
 
 # Inspect collector and local ops posture
@@ -193,6 +205,7 @@ static/
 scripts/
   run_local.sh
   seed_demo_data.sh
+  backup_sqlite.sh / restore_sqlite.sh
   check_tailscale_access.sh
 
 docs/
@@ -270,10 +283,16 @@ smoke, and FastAPI endpoint smoke checks. Tests cover:
 
 - [docs/index.md](docs/index.md) — documentation home and quick operational
   overview.
+- [docs/current-progress.md](docs/current-progress.md) — audited inventory of
+  implemented modules, storage, CLI, API/dashboard surfaces, validation status,
+  and current product boundary.
 - [docs/runbook.md](docs/runbook.md) — local operations, validation, recovery,
   source QA, and remote-access checklist.
 - [docs/implementation-design.md](docs/implementation-design.md) — intended app,
   persistence, service, ingestion, dashboard, and safety architecture.
+- [docs/high-precision-roadmap.md](docs/high-precision-roadmap.md) — ordered
+  roadmap for higher-accuracy Seattle high-temperature signals and calibrated
+  bucket probabilities.
 - [docs/schema-reference.md](docs/schema-reference.md) — current SQLite schema
   and planned schema extensions.
 - [docs/temperature-forecasting-plan.md](docs/temperature-forecasting-plan.md) —
