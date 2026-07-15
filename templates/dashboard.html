@@ -418,6 +418,12 @@
             <span class="section-label">Market probabilities</span>
             <h2>Market-implied snapshots</h2>
           </div>
+          {% if selected_kalshi_market %}
+            <p class="pill warning-pill">Selected Kalshi research market: {{ selected_kalshi_market.ticker }}</p>
+            <small class="card-note">{{ selected_kalshi_market.title }} · selection is not a bet or settlement verification.</small>
+          {% else %}
+            <p class="pill muted-pill">No Kalshi market selected</p>
+          {% endif %}
           <div class="list">
             {% for snap in market_snapshots %}
               <div class="market-row">
@@ -433,6 +439,38 @@
               </div>
             {% else %}
               <p class="empty">No market snapshots yet.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card feature-card market-card">
+          <div class="section-heading">
+            <span class="section-label">Kalshi candidates</span>
+            <h2>Seattle market discovery</h2>
+          </div>
+          <div class="list">
+            {% for candidate in kalshi_candidates %}
+              <div class="market-row">
+                <div class="row market-row-top">
+                  <div>
+                    <strong>{{ candidate.ticker }}</strong>
+                    <small>{{ candidate.title }}</small>
+                    <small>Target {{ candidate.target_date }} · score {{ candidate.rank_score }} · {{ candidate.status or 'status unknown' }}</small>
+                    <small>{{ candidate.rank_reasons|join('; ') if candidate.rank_reasons else 'No match reasons recorded' }}</small>
+                    <small>YES {{ candidate.yes_bid_cents if candidate.yes_bid_cents is not none else "—" }}/{{ candidate.yes_ask_cents if candidate.yes_ask_cents is not none else "—" }}¢ · captured {{ candidate.captured_at }}</small>
+                  </div>
+                  <span class="badge {{ 'good' if candidate.selected else 'neutral' }}">{{ 'selected' if candidate.selected else 'candidate' }}</span>
+                </div>
+                {% if not candidate.selected %}
+                  <form class="inline-form" method="post" action="/kalshi/select-market?target_date={{ candidate.target_date }}&ticker={{ candidate.ticker }}">
+                    <button type="submit">Select for research</button>
+                  </form>
+                {% else %}
+                  <small class="card-note">Selected locally for research. Manual settlement-rule verification is still required.</small>
+                {% endif %}
+              </div>
+            {% else %}
+              <p class="empty">No Kalshi candidates persisted yet. Use <code>python -m kalshi_temps find-kalshi-markets --target-date YYYY-MM-DD</code>.</p>
             {% endfor %}
           </div>
         </article>
