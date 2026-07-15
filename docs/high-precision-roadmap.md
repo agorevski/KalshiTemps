@@ -9,167 +9,138 @@ This roadmap is for maximizing the accuracy and precision of Seattle daily high-
 - Prefer official NOAA/NWS and verified station observations over convenience feeds.
 - Treat disagreement, latency, missingness, source mismatch, and model spread as first-class uncertainty signals.
 - Produce calibrated probability distributions by market bucket, not only a point forecast.
-- Run paper-live and operational soak before any trading-adjacent use.
+- Run real paper-live and operational soak before any trading-adjacent use.
+
+## Status summary
+
+In-repository foundations are now implemented for settlement replay, official source and station metadata, model adapters, marine/cloud nowcast records, backfill/calibration records, paper-live tracking, optional token-gated local access, and dashboard/API integration. The remaining acceptance criteria still require external dependencies: user-verified market-specific rules, live Kalshi credentials/feed permissions, paid ECMWF/GraphCast licensing, actual satellite image processing, sufficient historical backfill, proven calibrated model performance, long-running paper-live soak, compliance/legal review, and production-grade auth/deployment.
 
 ## Ordered roadmap
 
-### P0: Settlement-source verification and official reconciliation
+### P0: Settlement-source verification and official reconciliation — foundation implemented; real rules still external
 
 Goal: make every market outcome replayable and auditable before building signal confidence.
 
-1. Record each market's exact rule text, ticker, contract title, expiration, source, station, product, units, rounding method, daily cutoff, time zone, fallback source, correction policy, and reviewer.
-2. Classify markets as `not_actionable_pending_rule_verification` until the exact official settlement source is verified from the market terms.
-3. Build a replayable official outcome reconciliation pipeline:
-   - Store the first published official outcome separately from later corrected outcomes.
-   - Link each official outcome to raw source payload or immutable hash.
-   - Compare normalized official result to expected market bucket using the recorded settlement rule.
-   - Flag source, station, product, rounding, cutoff, and correction mismatches.
-4. Maintain an exception log for ambiguous rule text, late corrections, fallback use, outages, and manual review decisions.
+Implemented foundations:
 
-Acceptance criteria:
+- `market_rules` stores ticker, rule text, source, station/product, units, rounding, cutoff, fallback, correction policy, reviewer, and verification status.
+- `official_outcomes` and `settlement_replays` store official outcomes, replay status, normalized/rounded values, mismatch reasons, correction/fallback flags, payload hashes, and rule-version context.
+- CLI/API support exists through `record-official-outcome`, `replay-settlement`, `/api/settlement/replays`, and `/api/market/verification`.
+
+Still required:
+
+1. The user or trusted reviewer must verify each real market's exact official rule text from market terms.
+2. Maintain an exception log for ambiguous rule text, late corrections, fallback use, outages, and manual review decisions.
+3. Build enough real replay history to prove zero reconciliation errors for verified markets, excluding documented official corrections.
+
+Acceptance criteria not yet proven:
 
 - 100% of paper-live markets have verified rule records before analysis is labeled actionable.
 - Official outcome replay from raw payload plus rule metadata exactly reproduces the settlement bucket.
 - Reconciliation error rate is zero for verified markets, excluding documented official corrections.
 
-### P1: Station metadata, KSEA discipline, QC, latency, rounding, and cutoff correctness
+### P1: Station metadata, KSEA discipline, QC, latency, rounding, and cutoff correctness — foundation implemented; verification depth pending
 
-Goal: prevent station/source drift from overwhelming forecast skill.
+Implemented foundations:
 
-1. Treat KSEA or any other station as authoritative only when the market rule explicitly verifies it.
-2. Maintain station metadata for KSEA and all proxies: station class, network, latitude/longitude, elevation, water exposure, land-cover context, sensor type where available, operating status, known moves, and maintenance notes.
-3. Enforce observation QC before feature generation:
-   - Reject impossible ranges, future timestamps, stale records, frozen sensors, duplicate payloads, unit ambiguity, and failed official QC flags.
-   - Track ingest time separately from observation valid time.
-   - Store source latency for every poll.
-4. Implement exact local-day cutoff, DST handling, daily maximum definition, unit conversion, and rounding behavior from the verified rule.
-5. Compare same-time KSEA values across NOAA/NWS/METAR/Weather Underground-style displays only as source consistency checks unless one is verified as the settlement product.
+- `station_metadata` and `official_observations` persist station class, network, location/elevation, source class, metadata hash, official observation fields, QC status/report, provenance hash, and source poll links.
+- CLI/API support exists through `import-stations`, `list-stations`, `collect-nws-observation`, `import-climate-daily-summaries`, `list-official-observations`, and `/api/official/observations`.
+- Basic deterministic validators and collector health summaries track freshness, plausible ranges, duplicates, stale records, and poll latency.
 
-Acceptance criteria:
+Still required:
 
-- Station mismatch frequency is tracked daily and reviewed for every settlement-source family.
-- Source latency p50/p90/p99 is available by source and station.
-- Missingness and stale-record rates are visible by source, station, and hour.
-- Rounding/cutoff tests cover local midnight, DST transitions, Fahrenheit/Celsius conversion, and bucket boundaries.
+- Treat KSEA or any other station as authoritative only when the market rule explicitly verifies it.
+- Add source-specific official QC flags, station-change histories, richer same-time source consistency checks, and comprehensive DST/cutoff/rounding tests for every verified rule family.
+- Track station mismatch, missingness, stale-record rates, and latency percentiles on real feeds over time.
 
-### P2: Official NOAA/NWS collectors and nearby ASOS/AWOS network
+### P2: Official NOAA/NWS collectors and nearby ASOS/AWOS network — foundation implemented; production operation pending
 
-Goal: build the observation backbone from trusted public sources before lower-trust context.
+Implemented foundations:
 
-1. Productionize official NOAA/NWS climate and observation collectors relevant to the verified settlement product.
-2. Collect KSEA plus nearby ASOS/AWOS stations for calibrated proxy context, including but not limited to stations representing Puget Sound, inland warming, marine influence, and regional wind shifts.
-3. Store raw payload hashes, normalized rows, source URLs, poll status, retry metadata, and newest observation timestamps.
-4. Add collector health dashboards for freshness, latency, missingness, parse errors, source changes, and station availability.
-5. Keep PWS data out of primary models unless a station has independent calibration, metadata, QC, and stable history.
+- Public NWS discussion, Aviation Weather METAR, and api.weather.gov station observation collectors can run as explicit one-shot commands with poll records, payload hashes, and health summaries.
+- Station metadata imports support KSEA/proxy network context.
 
-Acceptance criteria:
+Still required:
 
-- Official source collectors can replay historical payload fixtures deterministically.
-- Nearby station observations include metadata and QC status before they can influence predictions.
-- Collector health reports source latency percentiles, missingness, and parse-failure rates.
+- Production scheduling, retries/backoff, monitoring, alerting, broad fixture replay, and nearby ASOS/AWOS coverage depth.
+- Confirmation that the collected product is the verified settlement product for each market.
+- PWS data must remain out of primary models unless independently calibrated and quality controlled.
 
-### P3: Forecast-model ingestion and forecast-hour alignment
+### P3: Forecast-model ingestion and forecast-hour alignment — adapter foundation implemented; licensed/production feeds pending
 
-Goal: compare guidance precisely instead of mixing incompatible runs and horizons.
+Implemented foundations:
 
-1. Ingest HRRR, NAM, GFS, and NBM with run time, valid time, forecast hour, model cycle, product, grid point or station extraction method, and availability timestamp.
-2. Align model values to the verified settlement local day and station/proxy target.
-3. Store run-to-run deltas for predicted high, hourly temperature path, and bucket probabilities where available.
-4. Track forecast-hour-specific skill rather than treating all lead times equally.
-5. Preserve model disagreement as a signal: spread, direction of revisions, late-cycle trend, and outlier model flags.
+- `model_adapters.py`, `import-model-forecasts`, and `fetch-model-forecasts` normalize supported JSON/CSV/URL payloads for HRRR/NAM/GFS/NBM-style records.
+- `model_runs`, `model_run_extractions`, `model_run_deltas`, `model_probability_buckets`, and `model_spread` persist run/valid/extraction metadata, run-to-run deltas, bucket probabilities, and spread.
+- `/api/model/adapters` exposes model run metadata and deltas.
 
-Acceptance criteria:
+Still required:
 
-- Every model feature has run time, valid time, forecast hour, extraction location, and ingest latency.
-- MAE is reported by model, forecast hour, hour-of-day snapshot, season, and regime.
-- Run-to-run deltas are available for current-day updates and historical evaluation.
+- Production-grade HRRR/NAM/GFS/NBM feed contracts and source-specific parsers.
+- Paid ECMWF/GraphCast access, licenses, and storage terms before those feeds are used.
+- Forecast-hour skill reports by model, lead time, snapshot hour, season, and regime on real backfill.
 
-### P4: Seattle-specific marine layer, clouds, fog/stratus, wind shift, and solar features
+### P4: Seattle-specific marine layer, clouds, fog/stratus, wind shift, and solar features — manual/proxy foundation implemented; actual satellite processing pending
 
-Goal: capture local processes that drive current-day Seattle high-temperature misses.
+Implemented foundations:
 
-1. Detect marine layer and Puget Sound fog/stratus regimes from NWS discussions, cloud ceiling, visibility, dew point, pressure, wind, and satellite-derived features.
-2. Add visible satellite/cloud features when licensing and implementation are clear:
-   - Morning cloud extent over Puget Sound and KSEA.
-   - Stratus edge position and burn-off timing.
-   - Cloud-clearing velocity and persistence after 9-11 AM.
-3. Track wind direction shifts, onshore push, offshore flow, convergence-zone influence, and sea-breeze timing.
-4. Add solar radiation or solar proxy features where available, including expected clear-sky radiation versus observed/estimated reduction.
-5. Label regimes consistently for historical bias and calibration.
+- Forecast-discussion regime extraction, `marine_layer_indicators`, `cloud_features`, and nowcast fields can persist marine/cloud, ceiling, fog/stratus, wind shift, solar proxy, burn-off, and confidence context.
+- `import-cloud-features`, `list-cloud-features`, `/api/nowcast/signals`, and dashboard panels expose these signals.
 
-Acceptance criteria:
+Still required:
 
-- Daily regime tags are reproducible from stored inputs.
-- MAE and bucket error are reported separately for marine-layer, persistent-stratus, offshore-flow, heat, and ordinary regimes.
-- Feature missingness is tracked so absent satellite/solar data does not masquerade as clear sky.
+- Actual satellite image processing for quantitative morning cloud extent, stratus edge, clearing velocity, and burn-off timing.
+- Verified solar inputs and enough data to evaluate MAE/bucket error by marine-layer, persistent-stratus, offshore-flow, heat, and ordinary regimes.
 
-### P5: Intraday nowcasting snapshots at 7, 9, 11, and noon
+### P5: Intraday nowcasting snapshots at 7, 9, 11, and noon — foundation implemented; performance unproven
 
-Goal: estimate remaining upside from observed warming, cloud clearing, and current max.
+Implemented foundations:
 
-1. Generate fixed local snapshots at 7 AM, 9 AM, 11 AM, and noon.
-2. Store current temperature, intraday max so far, dew point, wind, pressure, cloud ceiling, visibility, cloud trend, solar proxy, warming rate, and source freshness.
-3. Compute remaining-upside distributions conditioned on:
-   - Current max and recent warming rate.
-   - Time of year and solar window remaining.
-   - Marine layer clearance status.
-   - Wind shift and dew point trend.
-   - Latest HRRR/NBM short-range updates and run-to-run deltas.
-4. Show widening uncertainty when sources disagree or observations are stale.
+- `generate-nowcast-snapshots` creates fixed-hour evidence-only snapshots from stored observations.
+- `nowcast_snapshots` stores current temperature, intraday max, warming rate, dew point, wind, pressure, ceiling, visibility, solar proxy, cloud/ceiling trend, marine-push indicator, remaining-solar-window proxy, remaining-upside distribution, and data status.
+- `/api/nowcast/signals` and dashboard panels expose nowcast records.
 
-Acceptance criteria:
+Still required:
 
-- Snapshot completeness is reported by hour and source.
-- MAE is reported by snapshot hour and regime.
-- Bucket Brier score and log loss improve or are explicitly justified versus a persistence/climatology baseline.
+- Real scheduled snapshot capture, source completeness reporting by hour, and performance metrics by snapshot hour and regime.
+- Demonstrated Brier/log-loss improvement or documented non-improvement versus persistence/climatology baselines.
 
-### P6: Historical backfill and conditional model bias
+### P6: Historical backfill and conditional model bias — pipeline foundation implemented; sufficient data missing
 
-Goal: learn when each source is wrong, not just its average error.
+Implemented foundations:
 
-1. Backfill official outcomes, observations, model runs, forecast discussions, model deltas, proxy stations, and daily regime labels.
-2. Build conditional bias tables by station, model, season, lead time, forecast hour, snapshot hour, regime, and source-latency state.
-3. Use strict train/validation/test splits by date to avoid leakage.
-4. Require sample size, recency, uncertainty intervals, and holdout metrics before applying a bias correction.
-5. Keep original raw forecasts and adjusted forecasts side by side.
+- `run-backfill` replays frozen JSON/CSV fixture bundles into SQLite and records `backfill_runs` summaries.
+- `compute-calibration` supports split-date/gap parameters; `calibration-report` exports JSON reports.
+- Bias and bucket calibration tables can be computed from stored outcomes and prediction snapshots.
 
-Acceptance criteria:
+Still required:
 
-- Bias tables include sample count, mean error, median error, MAE, p90 absolute error, and confidence interval.
-- Holdout MAE and bucket scoring are reported by regime and season.
-- Bias adjustments are disabled or downgraded when sample size is too small or regime labels are missing.
+- Sufficient real historical backfill across observations, model runs, forecast discussions, market prices, official outcomes, and regimes.
+- Strict train/validation/test splits by date, leakage checks, sample-size thresholds, confidence intervals, holdout metrics, and disabled/downgraded bias corrections when data are sparse.
 
-### P7: Calibrated probabilistic bucket models and reliability metrics
+### P7: Calibrated probabilistic bucket models and reliability metrics — metrics foundation implemented; calibration not proven
 
-Goal: output honest probabilities for settlement buckets.
+Implemented foundations:
 
-1. Start with transparent baselines: climatology, latest official high so far, model consensus, NBM probabilities, and regime-adjusted bias tables.
-2. Add calibrated probabilistic models only after clean history exists.
-3. Predict the full distribution over temperature buckets and thresholds.
-4. Calibrate with isotonic, Platt, temperature scaling, or other documented methods as appropriate.
-5. Evaluate using reliability curves, expected calibration error, Brier score, log loss, sharpness, and coverage.
-6. Keep market-implied probabilities as a comparison input only when prices are fresh, liquid enough, and clearly timestamped.
+- Local Brier/reliability-bin scaffolding exists for stored prediction snapshots and outcomes.
+- Dashboard/API surfaces calibration summaries and backfill reports.
 
-Acceptance criteria:
+Still required:
 
-- Bucket Brier score, log loss, reliability curves, and calibration error are reported for each snapshot hour.
-- Calibration reports include separate results by regime, season, and lead time.
-- Probability output includes uncertainty warnings for stale data, source mismatch, high spread, and unverified rules.
+- Clean history, transparent baselines, and out-of-sample reliability curves, expected calibration error, Brier score, log loss, sharpness, and coverage by snapshot hour/regime/season/lead time.
+- Market-implied probabilities must remain comparison inputs only when fresh, liquid enough, and clearly timestamped.
 
-### P8: Paper-live shadow mode and operational soak
+### P8: Paper-live shadow mode and operational soak — tracking foundation implemented; real soak not complete
 
-Goal: prove reliability before any trading-adjacent workflow.
+Implemented foundations:
 
-1. Run paper-live with no betting, no order entry, and no automated execution.
-2. Capture every input, prediction, probability distribution, market-price snapshot if permitted, and human note before official settlement.
-3. Reconcile against official outcomes after release and after correction windows.
-4. Track operational health: uptime, source latency, missingness, retry behavior, database growth, backup success, restore drills, and alert fatigue.
-5. Review daily misses and update only documented, versioned assumptions.
+- `paper_live_runs`, checklist entries, prediction notes, reconciliation/postmortem notes, and soak metrics are persisted.
+- CLI/API support exists through `start-paper-live-run`, `list-paper-live-runs`, `close-paper-live-run`, `record-paper-live-checklist`, `record-paper-live-prediction-note`, `record-paper-live-postmortem`, `record-paper-live-soak-metric`, `/api/paper-live/status`, and `/api/paper-live/runs`.
+- Ops helpers summarize paper-live readiness and explicitly keep automated betting disabled.
 
-Acceptance criteria:
+Still required:
 
-- Multi-week shadow mode completes with daily reconciliation reports.
-- Reconciliation error, source latency percentiles, missingness, station mismatch frequency, MAE, Brier score, log loss, and calibration curves are reviewed before escalation.
+- Multi-week shadow mode with no betting, no order entry, daily reconciliation, uptime/source-latency/missingness/retry/backup/restore/alert review, and postmortems.
 - Any trading-adjacent use requires separate human, legal, compliance, credential, risk-limit, and security review.
 
 ## Required metrics dashboard
@@ -195,4 +166,4 @@ Track these metrics at minimum:
 
 ## Financial, legal, and compliance caveats
 
-Kalshi markets are regulated financial products. Users must follow Kalshi terms, market rules, data-provider licenses, account permissions, organizational policy, and applicable law. This project supports research, auditability, and recordkeeping only; it is not financial advice, compliance approval, or a trading system. Any future trading-adjacent use requires explicit human review, legal/compliance approval, credential controls, risk limits, kill switches, audit logs, and security review.
+Kalshi markets are regulated financial products. Users must follow Kalshi terms, market rules, data-provider licenses, account permissions, organizational policy, and applicable law. This project supports research, auditability, and recordkeeping only; it is not financial advice, compliance approval, guaranteed arbitrage, or a trading system. Any future trading-adjacent use requires explicit human review, legal/compliance approval, credential controls, risk limits, kill switches, audit logs, and security review.

@@ -1,6 +1,6 @@
 # Kalshi Temps documentation
 
-This documentation ties together the current Kalshi Temps project: a Python FastAPI application, SQLite logging, public weather collector foundations, market-rule verification records, local research dashboard, calibration scaffolding, and optional private remote access over Tailscale. Start with [current-progress.md](current-progress.md) for the implementation inventory; use roadmap documents for future or unresolved work.
+This documentation ties together the current Kalshi Temps project: a Python FastAPI application, SQLite logging, public weather collector foundations, official source/station metadata, settlement replay, market-rule verification records, model adapter foundations, marine/cloud nowcast signals, backfill/calibration records, paper-live tracking, optional local token gating, and precision dashboard/API integration. Start with [current-progress.md](current-progress.md) for the implementation inventory; use roadmap documents for future or unresolved work.
 
 ## Quick start
 
@@ -24,18 +24,17 @@ Open:
 
 You can also start the local app with `./scripts/run_local.sh`.
 
-
 ## Current status vs roadmap
 
 - [Current implementation progress](current-progress.md) is the audited inventory of what exists now, including modules, storage, CLI, API/dashboard surfaces, validation status, and product boundary.
-- [Product shortcomings and roadmap](shortcomings-and-roadmap.md) is the conservative gap list and future-work plan. Do not treat roadmap items as implemented.
-- [High-precision Seattle temperature signal roadmap](high-precision-roadmap.md) is the ordered plan for improving settlement-source discipline, KSEA/proxy station quality, intraday nowcasting, historical backfill, and calibrated bucket accuracy.
-- Current status: local research support with public/manual collectors and foundations. Not financial advice, not guaranteed arbitrage, not automated betting, and not a production-calibrated trading system. Settlement rules must be verified per market.
+- [Product shortcomings and roadmap](shortcomings-and-roadmap.md) is the conservative gap list and future-work plan. Do not treat unresolved external dependencies as solved.
+- [High-precision Seattle temperature signal roadmap](high-precision-roadmap.md) now marks in-repository foundations that are complete while preserving acceptance criteria that still require real data, permissions, licensing, or soak.
+- Current status: local research support with public/manual collectors, settlement replay, station metadata, model adapter/nowcast/backfill/paper-live foundations, and precision dashboard/API surfaces. Not financial advice, not guaranteed arbitrage, not automated betting, and not a production-calibrated trading system. Settlement rules must be verified per market.
 
 ## Research plan
 
 1. Identify temperature-related Kalshi markets and document the market rules before collecting or analyzing data.
-2. Record market metadata, observations, prices, timestamps, and derived research notes in SQLite.
+2. Record market metadata, observations, prices, timestamps, station/source metadata, and derived research notes in SQLite.
 3. Keep raw observations separate from derived signals so assumptions can be audited.
 4. Use demo seed data for dashboard development and avoid mixing demo rows with live research records.
 5. Review results manually; this project is research support, not financial advice or automated trading.
@@ -45,7 +44,7 @@ You can also start the local app with `./scripts/run_local.sh`.
 The implemented dashboard and APIs now surface a concise view of six research layers while linking to the detailed plans rather than duplicating them:
 
 1. **Raw model disagreement** across short-range and probabilistic guidance.
-2. **Seattle marine layer timing** and related regime signals that can change the daily high.
+2. **Seattle marine layer timing** and related regime/cloud/nowcast signals that can change the daily high.
 3. **KSEA and surrounding observations** for official-station tracking and calibrated proxy context.
 4. **Historical conditional model bias** segmented by station, season, hour, and weather regime.
 5. **Intraday nowcasting scaffolding** for remaining-upside research before the settlement window closes.
@@ -53,11 +52,11 @@ The implemented dashboard and APIs now surface a concise view of six research la
 
 Detailed planning lives in [temperature-forecasting-plan.md](temperature-forecasting-plan.md), [data-sources.md](data-sources.md), and [market-workflow-and-risk-controls.md](market-workflow-and-risk-controls.md).
 
-For day-to-day local operation, validation, database lifecycle, provenance checks, and troubleshooting, use the [runbook](runbook.md). For backup/restore, Tailscale posture, logs, and incident-response steps, use the [operations runbook](operations-runbook.md).
+For day-to-day local operation, validation, database lifecycle, provenance checks, and troubleshooting, use the [runbook](runbook.md). For backup/restore, token-gated local access posture, Tailscale posture, logs, and incident-response steps, use the [operations runbook](operations-runbook.md).
 
 ### Calibration roadmap
 
-The repository can store official outcomes, prediction snapshots, bias summaries, and bucket calibration metrics, but sufficient real historical backfill does not yet exist. After enough clean history is collected, start with transparent baselines and only then consider gradient-boosted bucket-probability models. Do not describe model output as guaranteed arbitrage.
+The repository can store official outcomes, prediction snapshots, backfill runs, bias summaries, and bucket calibration metrics, but sufficient real historical backfill and proven out-of-sample performance do not yet exist. After enough clean history is collected, start with transparent baselines and only then consider gradient-boosted bucket-probability models. Do not describe model output as guaranteed arbitrage.
 
 ## SQLite logging
 
@@ -78,8 +77,10 @@ Operational expectations:
 - Initialize schema with `python -m kalshi_temps init-db`.
 - Load sample rows with `python -m kalshi_temps seed-demo` or `./scripts/seed_demo_data.sh`.
 - Run public collector foundations with `python -m kalshi_temps run-collectors` when network access is appropriate.
-- Manage market-rule records with `add-market-rule`, `verify-market-rule`, and `list-market-rules`.
-- Inspect collector and local ops posture with `collector-health` and `ops-status`.
+- Manage station/official-source records with `import-stations`, `list-stations`, `collect-nws-observation`, and `import-climate-daily-summaries`.
+- Manage market-rule records and replays with `add-market-rule`, `verify-market-rule`, `list-market-rules`, `record-official-outcome`, and `replay-settlement`.
+- Import model/nowcast/backfill research records with `import-model-forecasts`, `import-cloud-features`, `generate-nowcast-snapshots`, and `run-backfill`.
+- Inspect collector, paper-live, and local ops posture with `collector-health`, `list-paper-live-runs`, and `ops-status`.
 - Keep `data/` runtime files untracked unless a fixture is intentionally added.
 - Back up the SQLite file before schema migrations or bulk imports.
 
@@ -91,12 +92,13 @@ Run the local FastAPI app:
 uvicorn kalshi_temps.app:app --host 127.0.0.1 --port 8000
 ```
 
-Expected routes:
+Optional local token gate:
 
-- `/dashboard` for the local dashboard; `/` redirects there
-- `/docs` for FastAPI-generated API documentation
-- `/health/json` for health status
-- `/api/market/verification`, `/api/collector/health`, `/api/weather/features`, `/api/calibration/summary`, and `/api/ops/status` for high-level research and operations summaries
+```bash
+export KALSHI_TEMPS_ACCESS_TOKEN='<local-secret-token>'
+```
+
+Expected routes include `/dashboard`, `/docs`, `/health/json`, `/api/official/observations`, `/api/model/adapters`, `/api/settlement/replays`, `/api/nowcast/signals`, `/api/backfill/reports`, `/api/paper-live/status`, `/api/market/verification`, `/api/collector/health`, `/api/weather/features`, `/api/calibration/summary`, and `/api/ops/status`.
 
 The dashboard should make provenance clear: demo, manual-live, replay/paper-live, live, and derived calculations should be distinguishable.
 
@@ -116,12 +118,12 @@ Keep the app command bound to loopback:
 uvicorn kalshi_temps.app:app --host 127.0.0.1 --port 8000
 ```
 
-Before using Tailscale Serve, Funnel, or any public exposure, review authentication, authorization, logging, data sensitivity, and whether credentials or trading-related information could be exposed.
+Before using Tailscale Serve, Funnel, or any public exposure, review authentication, authorization, logging, data sensitivity, and whether credentials or trading-related information could be exposed. The env-token gate is useful local hardening but is not production-grade auth/deployment.
 
 ## Safety and compliance caveats
 
 - Kalshi markets are regulated financial products; follow Kalshi terms, market rules, and applicable law.
-- This project does not provide financial advice, compliance approval, or automated trading.
+- This project does not provide financial advice, compliance approval, guaranteed arbitrage, or automated trading.
 - Treat forecasts and dashboard metrics as research aids, not instructions to trade.
 - Never commit API keys, account identifiers, credentials, or private exports.
 - Document assumptions for each market so analysis can be reproduced and challenged.

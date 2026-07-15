@@ -6,14 +6,17 @@ It is designed for decision support, provenance, and recordkeeping—not guarant
 arbitrage, financial advice, or unattended trading.
 
 The current application is a working local research scaffold with validated
-SQLite/FastAPI flows, manual public weather collectors, market-rule verification
-records, forecast-model import foundations, weather-feature extraction,
-historical-calibration scaffolding, collector health, and local ops status. Full
-local validation has passed across 67 tests, compile checks, script syntax
-checks, CLI smoke checks, and FastAPI endpoint smoke checks. It does **not** yet
-provide authenticated access, permitted live Kalshi feeds, licensed ECMWF or
-GraphCast data, satellite image processing, deep historical calibration,
-production operational soak, compliance approval, or automated trading.
+SQLite/FastAPI flows, public weather collectors, station metadata, market-rule
+verification, settlement replay, forecast-model adapter foundations,
+marine/cloud nowcast signals, backfill/calibration records, collector health,
+paper-live tracking, token-gated local access, and precision dashboard/API
+integration. Full local validation has passed across 95 tests, compile checks,
+script syntax checks, CLI smoke checks, and FastAPI endpoint smoke checks. It
+still depends on external work for real market-specific rule verification by the
+user, permitted live Kalshi feeds, paid ECMWF or GraphCast licensing, actual
+satellite image processing, sufficient historical backfill, proven calibrated
+performance, long-running paper-live soak, compliance/legal review,
+production-grade auth/deployment, and any trading controls.
 
 ## What the product is for
 
@@ -36,19 +39,24 @@ Implemented in this repository:
 
 - FastAPI app with dashboard routes at `/` and `/dashboard`.
 - Health endpoints at `/health` and `/health/json`.
-- JSON endpoints for observations, sources, model runs, model spread, market
-  snapshots, fusion summary, market verification, collector health, weather
-  features, calibration summaries, and ops status.
+- JSON endpoints for observations, sources, official observations/station
+  metadata, model runs, model spread/adapters, settlement replays, market
+  snapshots, fusion summary, market verification, collector health, weather and
+  nowcast signals, calibration/backfill summaries, paper-live status, and ops
+  status.
 - SQLite schema initialization and lightweight migration helpers.
-- Repository methods for sources, observations, collectors, market rules, model
-  runs, model spread, marine/weather/intraday features, market snapshots,
-  official outcomes, prediction snapshots, calibration metrics, risk guards, and
-  events.
+- Repository methods for sources, observations, official observations, station
+  metadata, collectors, market rules, settlement replays, model runs/adapters,
+  model spread/deltas, marine/cloud/nowcast features, market snapshots, official
+  outcomes, prediction snapshots, backfill runs, calibration metrics, paper-live
+  records, risk guards, and events.
 - Demo seed data for a six-layer Seattle temperature evidence view.
-- Public NWS discussion and Aviation Weather METAR collector foundations.
-- CLI workflows for market-rule records, manual model-high imports, feature
-  extraction, collector health, local ops status, official outcomes, prediction
-  snapshots, and calibration summaries.
+- Public NWS discussion, Aviation Weather METAR, and api.weather.gov station
+  observation collector foundations plus station/official-observation imports.
+- CLI workflows for market-rule records, settlement replay, manual/adapted model
+  forecast imports, feature extraction, cloud/nowcast records, collector health,
+  local ops status, official outcomes, backfill, prediction snapshots,
+  calibration reports, and paper-live run notes/soak metrics.
 - Pure utilities for METAR-like observation normalization, forecast-discussion
   normalization, model-high normalization, market snapshot normalization,
   provenance hashes, freshness checks, model spread, feature extraction, and
@@ -58,12 +66,16 @@ Remaining unresolved risks:
 
 - Real live operational soak with scheduled collectors, monitoring, alerting,
   backups, restore drills, and multi-week paper-live reconciliation.
-- Authenticated dashboard/API access control and role-based permissions.
+- Production-grade dashboard/API authentication, deployment hardening,
+  authorization, and role-based permissions beyond the local env-token gate.
 - Live Kalshi feed credentials, permissions, metadata, bid/ask, and order-book
   ingestion.
 - Paid/licensed ECMWF or GraphCast data access and license-compliant storage.
 - Satellite image processing for quantitative cloud/stratus burn-off features.
-- Real historical backfill depth and model calibration on sufficient data.
+- Real historical backfill depth and proven model calibration on sufficient
+  out-of-sample data.
+- User-verified market-specific settlement rules before treating any market as
+  actionable research context.
 - Compliance/legal review for trading-adjacent use; automated trading remains
   out of scope.
 
@@ -149,6 +161,7 @@ python -m kalshi_temps init-db --seed
 python -m kalshi_temps run-collectors
 python -m kalshi_temps collect-nws-discussion
 python -m kalshi_temps collect-metar --station KSEA
+python -m kalshi_temps collect-nws-observation --station KSEA
 python -m kalshi_temps collector-runs
 
 # Add/list/verify market settlement-rule metadata
@@ -156,15 +169,34 @@ python -m kalshi_temps add-market-rule --help
 python -m kalshi_temps verify-market-rule <TICKER> --verified-by <NAME>
 python -m kalshi_temps list-market-rules
 
-# Import manual model highs, inspect spread, and extract weather features
-python -m kalshi_temps import-model-highs <file.json-or-csv>
-python -m kalshi_temps list-model-spread
-python -m kalshi_temps extract-weather-features
+# Import station/official observation metadata
+python -m kalshi_temps import-stations <stations.json-or-csv>
+python -m kalshi_temps import-climate-daily-summaries <daily.json-or-csv>
+python -m kalshi_temps list-official-observations
 
-# Record outcomes/prediction snapshots and compute calibration scaffolding
+# Import model forecasts, inspect spread/deltas, and extract weather/nowcast features
+python -m kalshi_temps import-model-highs <file.json-or-csv>
+python -m kalshi_temps import-model-forecasts <file.json-or-csv>
+python -m kalshi_temps fetch-model-forecasts <url>
+python -m kalshi_temps list-model-spread
+python -m kalshi_temps list-model-deltas
+python -m kalshi_temps extract-weather-features
+python -m kalshi_temps import-cloud-features <file.json-or-csv>
+python -m kalshi_temps generate-nowcast-snapshots
+
+# Record outcomes, replay settlement, run backfill, and compute calibration reports
 python -m kalshi_temps record-official-outcome --target-date YYYY-MM-DD --high-temperature-f 75
+python -m kalshi_temps replay-settlement <TICKER> --target-date YYYY-MM-DD
+python -m kalshi_temps run-backfill <fixture-dir-or-file>
 python -m kalshi_temps record-prediction-snapshot --model-name manual --target-date YYYY-MM-DD
 python -m kalshi_temps compute-calibration
+python -m kalshi_temps calibration-report --output data/calibration-report.json
+
+# Track paper-live runs without betting or order entry
+python -m kalshi_temps start-paper-live-run --name seattle-shadow --target-date YYYY-MM-DD
+python -m kalshi_temps record-paper-live-prediction-note <RUN_ID> --note "research note"
+python -m kalshi_temps record-paper-live-soak-metric <RUN_ID> --uptime-status observed
+python -m kalshi_temps list-paper-live-runs
 
 # Inspect collector and local ops posture
 python -m kalshi_temps collector-health
@@ -192,7 +224,14 @@ src/kalshi_temps/
   fusion.py           model spread, freshness, risk guard, probability utilities
   market_rules.py     settlement-rule completeness and verification helpers
   weather_features.py deterministic weather-regime and intraday features
+  official_sources.py public official source/station metadata import helpers
+  settlement.py       rule-driven official outcome replay helpers
+  model_adapters.py   normalized model forecast adapter/fetch/load helpers
+  nowcast.py          cloud and fixed-hour nowcast signal helpers
+  backfill.py         fixture replay/backfill orchestration
   calibration.py      historical bias and bucket calibration foundations
+  paper_live.py       no-betting paper-live run/note/soak helpers
+  auth.py             optional env-token access gate for local dashboard/API
   ops.py              local database/disk/access posture helpers
   seed.py             local demo data
 
@@ -267,7 +306,7 @@ PYTHONPATH=src python -m compileall -q src tests
 PYTHONPATH=src pytest
 ```
 
-Current validation has passed for 67 tests plus compileall, script syntax, CLI
+Current validation has passed for 95 tests plus compileall, script syntax, CLI
 smoke, and FastAPI endpoint smoke checks. Tests cover:
 
 - SQLite initialization, seeding, repository flows, CLI smoke checks, and app
@@ -275,9 +314,10 @@ smoke, and FastAPI endpoint smoke checks. Tests cover:
 - Parser/normalizer behavior for forecast discussions, METAR-like observations,
   model highs, market snapshots, freshness metadata, and provenance hashes.
 - Collector poll records and mocked public weather collector flows.
-- Market-rule verification, model spread, weather features, historical
-  calibration scaffolding, ops status, implied probabilities, freshness, and risk
-  guards.
+- Market-rule verification, settlement replay, official source/station metadata,
+  model adapters and deltas, weather/cloud/nowcast features, backfill and
+  calibration scaffolding, paper-live run tracking, token-gated access, ops
+  status, implied probabilities, freshness, and risk guards.
 
 ## Documentation map
 
