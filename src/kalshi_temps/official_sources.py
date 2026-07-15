@@ -139,6 +139,88 @@ def parse_nws_station_observation(
     return record
 
 
+def parse_nws_station_observation_records(
+    payload: str | bytes | Mapping[str, Any] | list[Mapping[str, Any]],
+    *,
+    station: str | None = None,
+    source_url: str | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize public api.weather.gov observation-list or single-observation payloads."""
+    data: Any = payload
+    if isinstance(payload, (str, bytes)):
+        text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
+        stripped = text.strip()
+        if stripped.startswith(("{", "[")):
+            data = json.loads(stripped)
+        else:
+            data = _csv_records(stripped)
+    if isinstance(data, Mapping) and isinstance(data.get("features"), list):
+        return [
+            parse_nws_station_observation(feature, station=station, source_url=source_url)
+            for feature in data["features"]
+            if isinstance(feature, Mapping)
+        ]
+    if isinstance(data, Mapping):
+        return [parse_nws_station_observation(data, station=station, source_url=source_url)]
+    if isinstance(data, list):
+        return [
+            parse_nws_station_observation(record, station=station, source_url=source_url)
+            if isinstance(record, Mapping) and "properties" in record
+            else normalize_public_observation_record(record, station=station, source_url=source_url)
+            for record in data
+        ]
+    raise ValueError("NWS observation records must be JSON, CSV, mapping, or list")
+
+
+def normalize_public_observation_record(
+    record: Mapping[str, Any],
+    *,
+    station: str | None = None,
+    source_url: str | None = None,
+) -> dict[str, Any]:
+    """Normalize CSV/JSON hourly public-observation fixtures into the observation schema."""
+    station_id = (station or _required_text(record, "station", aliases=("station_id", "STATION", "icao"))).upper()
+    observed_at = _datetime_to_iso(
+        _parse_datetime_required(
+            _first(record, "observed_at", ("timestamp", "time", "valid", "DATE")),
+            "observed_at",
+        )
+    )
+    temp_f = _optional_float(record, "temperature_f", aliases=("temp_f", "tmpf"))
+    if temp_f is None:
+        temp_c = _optional_float(record, "temperature_c", aliases=("temp_c", "tmpc"))
+        if temp_c is not None:
+            temp_f = _c_to_f(temp_c)
+    if temp_f is None:
+        raise ValueError("observation temperature is required")
+    normalized = {
+        "station": station_id,
+        "observed_at": observed_at,
+        "temperature_f": temp_f,
+        "dew_point_f": _optional_float(record, "dew_point_f", aliases=("dwpf",)),
+        "wind_direction_deg": _optional_int(record, "wind_direction_deg", aliases=("drct",)),
+        "wind_speed_mph": _optional_float(record, "wind_speed_mph", aliases=("sknt",)),
+        "pressure_mb": _optional_float(record, "pressure_mb", aliases=("mslp", "alti")),
+        "cloud_ceiling_ft": _optional_int(record, "cloud_ceiling_ft", aliases=("skyc1_height", "ceiling_ft")),
+        "source_url": source_url or _optional_text(record, "source_url"),
+        "raw_payload": dict(record),
+    }
+    if normalized["wind_speed_mph"] is not None and any(key in record for key in ("sknt",)):
+        normalized["wind_speed_mph"] = round(float(normalized["wind_speed_mph"]) * 1.15078, 1)
+    normalized["hash"] = provenance_hash(normalized)
+    return normalized
+
+
+def parse_public_observation_records(
+    payload: str | bytes | Mapping[str, Any] | list[Mapping[str, Any]],
+    *,
+    station: str | None = None,
+    source_url: str | None = None,
+) -> list[dict[str, Any]]:
+    records = _coerce_records(payload, list_keys=("observations", "records", "data", "results"))
+    return [normalize_public_observation_record(record, station=station, source_url=source_url) for record in records]
+
+
 def parse_climate_daily_summary_records(payload: str | bytes | Mapping[str, Any] | list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Normalize public daily-summary fixtures (NOAA JSON/CSV-like payloads)."""
     records = _coerce_records(payload, list_keys=("results", "records", "data", "summaries"))
@@ -244,6 +326,11 @@ def _optional_float(record: Mapping[str, Any], key: str, *, aliases: tuple[str, 
     if value is None or value == "":
         return None
     return float(value)
+
+
+def _optional_int(record: Mapping[str, Any], key: str, *, aliases: tuple[str, ...] = ()) -> int | None:
+    value = _optional_float(record, key, aliases=aliases)
+    return None if value is None else int(round(value))
 
 
 def _optional_date(record: Mapping[str, Any], key: str, *, aliases: tuple[str, ...] = ()) -> str | None:

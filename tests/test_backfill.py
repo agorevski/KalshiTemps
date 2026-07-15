@@ -8,7 +8,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kalshi_temps.backfill import run_backfill  # noqa: E402
+from kalshi_temps.backfill import create_backfill_plan, run_backfill  # noqa: E402
 from kalshi_temps import cli  # noqa: E402
 from kalshi_temps.db import connection, initialize_database  # noqa: E402
 from kalshi_temps.repository import WeatherRepository  # noqa: E402
@@ -67,7 +67,8 @@ def test_backfill_imports_fixture_bundle_idempotently() -> None:
             assert len(repo.list_official_outcomes()) == 1
             assert len(repo.list_weather_regime_features()) == 1
             assert len(repo.list_prediction_snapshots()) == 1
-            assert len(repo.list_backfill_runs()) == 2
+            assert len(repo.list_backfill_runs()) == 1
+            assert second["idempotent_replay"] is True
     finally:
         db_path.unlink(missing_ok=True)
         shutil.rmtree(fixture_dir, ignore_errors=True)
@@ -88,6 +89,91 @@ def test_backfill_reports_partial_failures() -> None:
         initialize_database(str(db_path))
         with connection(str(db_path)) as conn:
             assert WeatherRepository(conn).list_backfill_runs(limit=1)[0]["status"] == "partial_failure"
+    finally:
+        db_path.unlink(missing_ok=True)
+        shutil.rmtree(fixture_dir, ignore_errors=True)
+
+
+def test_backfill_plan_generation_invalid_range_and_dry_run() -> None:
+    db_path = _project_temp_db_path("test-backfill-plan")
+    try:
+        plan = create_backfill_plan(station="ksea", start_date="2026-07-14", end_date="2026-07-16", source_kind="nws_hourly")
+        assert plan["station"] == "KSEA"
+        assert len(plan["items"]) == 3
+        assert len(plan["plan_hash"]) == 64
+        assert "api.weather.gov" in plan["items"][0]["url"]
+
+        result = run_backfill(str(db_path), plan=plan, dry_run=True)
+        assert result["status"] == "success"
+        assert result["counts"]["planned_dates"] == 3
+        with connection(str(db_path)) as conn:
+            repo = WeatherRepository(conn)
+            assert repo.list_backfill_plans()[0]["plan_hash"] == plan["plan_hash"]
+    finally:
+        db_path.unlink(missing_ok=True)
+
+    try:
+        create_backfill_plan(station="KSEA", start_date="2026-07-16", end_date="2026-07-14")
+    except ValueError as exc:
+        assert "end_date" in str(exc)
+    else:
+        raise AssertionError("invalid date range should fail")
+
+
+def test_plan_run_uses_injected_fetcher_and_records_missing_dates_without_live_network() -> None:
+    db_path = _project_temp_db_path("test-backfill-fetcher")
+    try:
+        plan = create_backfill_plan(station="KSEA", start_date="2026-07-14", end_date="2026-07-15", source_kind="noaa_daily")
+        payloads = {
+            plan["items"][0]["url"]: json.dumps({"results": [{"STATION": "KSEA", "DATE": "2026-07-14", "TMAX": 222}]})
+        }
+
+        called: list[str] = []
+
+        def fetcher(url: str) -> str:
+            called.append(url)
+            if url not in payloads:
+                raise FileNotFoundError(url)
+            return payloads[url]
+
+        result = run_backfill(str(db_path), plan=plan, fetcher=fetcher)
+        assert result["status"] == "partial_failure"
+        assert result["counts"]["official_outcomes_imported"] == 1
+        assert result["missing_dates"] == ["2026-07-15"]
+        assert "fetch failed" in result["warnings"][0]["warning"]
+        assert called == [item["url"] for item in plan["items"]]
+
+        no_network = run_backfill(str(db_path), plan=create_backfill_plan(station="KSEA", start_date="2026-07-16", end_date="2026-07-16"))
+        assert no_network["status"] == "partial_failure"
+        assert no_network["missing_dates"] == ["2026-07-16"]
+        assert "no fetcher supplied" in no_network["warnings"][0]["warning"]
+    finally:
+        db_path.unlink(missing_ok=True)
+
+
+def test_fixture_imports_station_metadata_official_observations_and_warns_unsupported() -> None:
+    db_path = _project_temp_db_path("test-backfill-fixture-public")
+    fixture_dir = _project_fixture_dir("fixture-backfill-public")
+    try:
+        (fixture_dir / "station_metadata.json").write_text(
+            json.dumps([{"station_id": "KSEA", "network": "ASOS", "source_class": "official"}]),
+            encoding="utf-8",
+        )
+        (fixture_dir / "official_observations.csv").write_text(
+            "station,observed_at,temperature_f\nKSEA,2026-07-14T18:00:00+00:00,72\n",
+            encoding="utf-8",
+        )
+        (fixture_dir / "readme.txt").write_text("unsupported", encoding="utf-8")
+
+        result = run_backfill(str(db_path), fixture_dir)
+        assert result["status"] == "partial_failure"
+        assert result["counts"]["station_metadata_imported"] == 1
+        assert result["counts"]["official_observations_imported"] == 1
+        assert result["warnings"][0]["warning"].startswith("unsupported fixture extension")
+        with connection(str(db_path)) as conn:
+            repo = WeatherRepository(conn)
+            assert repo.get_station_metadata("KSEA") is not None
+            assert len(repo.list_official_observations()) == 1
     finally:
         db_path.unlink(missing_ok=True)
         shutil.rmtree(fixture_dir, ignore_errors=True)

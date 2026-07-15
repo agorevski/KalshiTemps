@@ -15,6 +15,8 @@ from kalshi_temps.official_sources import (  # noqa: E402
     parse_climate_daily_summary_records,
     parse_nearby_asos_awos_stations,
     parse_nws_station_observation,
+    parse_nws_station_observation_records,
+    parse_public_observation_records,
     parse_station_metadata_records,
 )
 from kalshi_temps.quality import WARN, validate_observation, validate_station_metadata  # noqa: E402
@@ -86,6 +88,29 @@ def test_climate_daily_summary_parser_supports_json_and_csv() -> None:
     assert json_records[0]["high_temperature_f"] == 72.0
     assert csv_records[0]["target_date"] == "2026-07-15"
     assert len(json_records[0]["provenance_hash"]) == 64
+
+
+def test_historical_hourly_observation_parsers_support_json_and_csv() -> None:
+    nws_payload = {
+        "features": [
+            {
+                "properties": {
+                    "timestamp": "2026-07-14T20:00:00+00:00",
+                    "temperature": {"value": 20.0},
+                    "station": "https://api.weather.gov/stations/KSEA",
+                }
+            }
+        ]
+    }
+    nws_records = parse_nws_station_observation_records(nws_payload)
+    csv_records = parse_public_observation_records(
+        "station,observed_at,temperature_f,sknt\nKSEA,2026-07-14T21:00:00+00:00,73,10\n"
+    )
+
+    assert nws_records[0]["station"] == "KSEA"
+    assert nws_records[0]["temperature_f"] == 68.0
+    assert csv_records[0]["wind_speed_mph"] == 11.5
+    assert len(csv_records[0]["hash"]) == 64
 
 
 def test_quality_checks_warn_for_missing_proxy_and_inactive_metadata() -> None:

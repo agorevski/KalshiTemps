@@ -9,6 +9,7 @@ from .calibration import bucket_brier_score, bucket_contains_temperature, genera
 from .fusion import ModelHighForecast, compare_bucket_probabilities, compute_model_spread, evaluate_freshness, generate_risk_guards
 from .kalshi import kalshi_market_to_snapshot, market_rule_draft_from_candidate
 from .market_rules import market_rule_actionability, normalize_market_rule, validate_market_rule
+from .monitoring import daily_report, evaluate_monitoring_checks
 from .official_sources import normalize_station_metadata
 from .quality import validate_forecast, validate_observation, validate_official_observation
 from .settlement import replay_settlement
@@ -2144,13 +2145,75 @@ class WeatherRepository:
         ).fetchall()
         return [_row_to_dict(row) for row in rows]
 
-    def start_backfill_run(self, *, source_path: str, source_hash: str) -> dict[str, Any]:
+    def save_backfill_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        _require_fields(plan, "station", "start_date", "end_date", "source_kind", "plan_hash")
+        plan_json = json.dumps(plan, sort_keys=True)
         self.conn.execute(
             """
-            INSERT INTO backfill_runs (source_path, source_hash, status, counts_json, errors_json, started_at)
-            VALUES (?, ?, 'running', '{}', '[]', ?)
+            INSERT INTO backfill_plans (station, start_date, end_date, source_kind, plan_hash, plan_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(plan_hash) DO UPDATE SET
+                station = excluded.station,
+                start_date = excluded.start_date,
+                end_date = excluded.end_date,
+                source_kind = excluded.source_kind,
+                plan_json = excluded.plan_json
             """,
-            (source_path, source_hash, utc_now_iso()),
+            (
+                str(plan["station"]).upper(),
+                plan["start_date"],
+                plan["end_date"],
+                plan["source_kind"],
+                plan["plan_hash"],
+                plan_json,
+            ),
+        )
+        row = self.conn.execute("SELECT * FROM backfill_plans WHERE plan_hash = ?", (plan["plan_hash"],)).fetchone()
+        return _backfill_plan_row_to_dict(row)
+
+    def list_backfill_plans(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM backfill_plans
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [_backfill_plan_row_to_dict(row) for row in rows]
+
+    def get_backfill_run_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT * FROM backfill_runs
+            WHERE idempotency_key = ? AND status IN ('success', 'partial_failure')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (idempotency_key,),
+        ).fetchone()
+        return _backfill_run_row_to_dict(row) if row else None
+
+    def start_backfill_run(
+        self,
+        *,
+        source_path: str,
+        source_hash: str,
+        plan: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        plan_hash = plan.get("plan_hash") if plan else None
+        plan_json = json.dumps(plan, sort_keys=True) if plan else None
+        self.conn.execute(
+            """
+            INSERT INTO backfill_runs (
+                source_path, source_hash, status, plan_hash, plan_json, idempotency_key,
+                dry_run, counts_json, errors_json, started_at
+            )
+            VALUES (?, ?, 'running', ?, ?, ?, ?, '{}', '[]', ?)
+            """,
+            (source_path, source_hash, plan_hash, plan_json, idempotency_key, int(dry_run), utc_now_iso()),
         )
         row = self.conn.execute("SELECT * FROM backfill_runs WHERE id = last_insert_rowid()").fetchone()
         return _backfill_run_row_to_dict(row)
@@ -2162,16 +2225,29 @@ class WeatherRepository:
         status: str,
         counts: dict[str, Any],
         errors: list[dict[str, Any]],
+        missing_dates: list[str] | None = None,
+        payload_hashes: dict[str, Any] | None = None,
+        warnings: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if status not in {"success", "partial_failure", "failed"}:
             raise ValueError("backfill status must be success, partial_failure, or failed")
         self.conn.execute(
             """
             UPDATE backfill_runs
-            SET status = ?, counts_json = ?, errors_json = ?, finished_at = ?
+            SET status = ?, counts_json = ?, errors_json = ?, missing_dates_json = ?,
+                payload_hashes_json = ?, warnings_json = ?, finished_at = ?
             WHERE id = ?
             """,
-            (status, json.dumps(counts, sort_keys=True), json.dumps(errors, sort_keys=True), utc_now_iso(), run_id),
+            (
+                status,
+                json.dumps(counts, sort_keys=True),
+                json.dumps(errors, sort_keys=True),
+                json.dumps(missing_dates or [], sort_keys=True),
+                json.dumps(payload_hashes or {}, sort_keys=True),
+                json.dumps(warnings or [], sort_keys=True),
+                utc_now_iso(),
+                run_id,
+            ),
         )
         row = self.conn.execute("SELECT * FROM backfill_runs WHERE id = ?", (run_id,)).fetchone()
         return _backfill_run_row_to_dict(row)
@@ -2482,6 +2558,171 @@ class WeatherRepository:
             "product_status": self.product_status(),
         }
 
+    def monitoring_summary(self) -> dict[str, Any]:
+        active_runs = self.list_paper_live_runs(include_closed=False, limit=1)
+        paper_live_status: dict[str, Any] = {"active_run_count": len(active_runs), "latest_soak_metric": None}
+        if active_runs:
+            paper_live_status = self.paper_live_run_detail(active_runs[0]["id"])
+            latest_soak = paper_live_status.get("soak_metrics", [None])[0] if paper_live_status.get("soak_metrics") else None
+            paper_live_status = {
+                "run_id": paper_live_status["id"],
+                "run_name": paper_live_status["run_name"],
+                "status": paper_live_status["status"],
+                "target_date": paper_live_status.get("target_date"),
+                "latest_soak_metric": latest_soak,
+                "open_checklist_count": sum(1 for item in paper_live_status.get("checklist", []) if item.get("status") != "done"),
+                "no_automated_betting": True,
+            }
+        latest_nowcast = self.list_nowcast_snapshots(limit=1)
+        calibration_count = self.conn.execute("SELECT COUNT(*) AS count FROM calibration_metrics").fetchone()["count"]
+        return {
+            "source_health": self.source_freshness_summaries(),
+            "collector_health": self.collector_health_summaries(),
+            "latest_observations": self.list_observations(limit=10),
+            "model_spread": self.latest_model_spread(),
+            "market_verification": self.market_verification_summary(),
+            "nowcast_status": {
+                "latest_snapshot": latest_nowcast[0] if latest_nowcast else None,
+                "snapshot_count": len(latest_nowcast),
+            },
+            "paper_live_status": paper_live_status,
+            "calibration_status": {"metric_count": int(calibration_count or 0)},
+        }
+
+    def evaluate_monitoring(self, *, high_spread_threshold_f: float = 4.0) -> list[dict[str, Any]]:
+        return evaluate_monitoring_checks(self.monitoring_summary(), high_spread_threshold_f=high_spread_threshold_f)
+
+    def save_alert_record(self, alert: dict[str, Any], *, alert_day: str | None = None) -> dict[str, Any]:
+        _require_fields(alert, "alert_key", "severity", "code", "message")
+        severity = str(alert["severity"])
+        if severity not in {"info", "warn", "fail"}:
+            raise ValueError("alert severity must be info, warn, or fail")
+        day = alert_day or alert.get("alert_day") or utc_now_iso()[:10]
+        source_name = alert.get("source_name") or alert.get("source") or ""
+        details = alert.get("details") or {}
+        details_json = details if isinstance(details, str) else json.dumps(details, sort_keys=True, default=str)
+        self.conn.execute(
+            """
+            INSERT INTO alert_records (
+                alert_key, alert_day, source_name, severity, code, message, details_json, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
+            ON CONFLICT(alert_key, alert_day, source_name) DO UPDATE SET
+                severity = excluded.severity,
+                code = excluded.code,
+                message = excluded.message,
+                details_json = excluded.details_json,
+                status = 'open',
+                last_seen_at = datetime('now'),
+                resolved_at = NULL,
+                resolved_by = NULL,
+                resolution_notes = NULL,
+                updated_at = datetime('now')
+            """,
+            (alert["alert_key"], day, source_name, severity, alert["code"], alert["message"], details_json),
+        )
+        row = self.conn.execute(
+            """
+            SELECT * FROM alert_records
+            WHERE alert_key = ? AND alert_day = ? AND source_name = ?
+            """,
+            (alert["alert_key"], day, source_name),
+        ).fetchone()
+        return _alert_row_to_dict(row)
+
+    def save_monitoring_alerts(
+        self,
+        checks: list[dict[str, Any]],
+        *,
+        alert_day: str | None = None,
+        include_info: bool = True,
+    ) -> list[dict[str, Any]]:
+        severities = {"info", "warn", "fail"} if include_info else {"warn", "fail"}
+        return [self.save_alert_record(check, alert_day=alert_day) for check in checks if check.get("severity") in severities]
+
+    def run_monitoring_checks(self, *, high_spread_threshold_f: float = 4.0, alert_day: str | None = None) -> dict[str, Any]:
+        summary = self.monitoring_summary()
+        checks = evaluate_monitoring_checks(summary, high_spread_threshold_f=high_spread_threshold_f)
+        alerts = self.save_monitoring_alerts(checks, alert_day=alert_day)
+        return {"summary": summary, "checks": checks, "alerts": alerts}
+
+    def list_alert_records(
+        self,
+        *,
+        include_resolved: bool = False,
+        severity: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = []
+        params: list[Any] = []
+        if not include_resolved:
+            clauses.append("status != 'resolved'")
+        if severity:
+            clauses.append("severity = ?")
+            params.append(severity)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT * FROM alert_records
+            {where}
+            ORDER BY alert_day DESC,
+                     CASE severity WHEN 'fail' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END,
+                     last_seen_at DESC, id DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+        return [_alert_row_to_dict(row) for row in rows]
+
+    def resolve_alert_record(
+        self,
+        *,
+        alert_id: int | None = None,
+        alert_key: str | None = None,
+        alert_day: str | None = None,
+        source_name: str | None = None,
+        resolved_by: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_at = utc_now_iso()
+        if alert_id is not None:
+            self.conn.execute(
+                """
+                UPDATE alert_records
+                SET status = 'resolved', resolved_at = ?, resolved_by = ?,
+                    resolution_notes = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (resolved_at, resolved_by, notes, alert_id),
+            )
+            row = self.conn.execute("SELECT * FROM alert_records WHERE id = ?", (alert_id,)).fetchone()
+        else:
+            if not alert_key:
+                raise ValueError("alert_id or alert_key is required")
+            day = alert_day or utc_now_iso()[:10]
+            source = source_name or ""
+            self.conn.execute(
+                """
+                UPDATE alert_records
+                SET status = 'resolved', resolved_at = ?, resolved_by = ?,
+                    resolution_notes = ?, updated_at = datetime('now')
+                WHERE alert_key = ? AND alert_day = ? AND source_name = ?
+                """,
+                (resolved_at, resolved_by, notes, alert_key, day, source),
+            )
+            row = self.conn.execute(
+                "SELECT * FROM alert_records WHERE alert_key = ? AND alert_day = ? AND source_name = ?",
+                (alert_key, day, source),
+            ).fetchone()
+        if row is None:
+            raise KeyError("Unknown alert record")
+        return _alert_row_to_dict(row)
+
+    def daily_monitoring_report(self, *, report_date: str | None = None) -> dict[str, Any]:
+        summary = self.monitoring_summary()
+        alerts = self.list_alert_records(include_resolved=False, limit=200)
+        return daily_report(summary, alerts, report_date=report_date)
+
     def market_verification_summary(self, ticker: str | None = None) -> dict[str, Any]:
         selected_ticker = ticker or self._latest_market_ticker()
         if selected_ticker is None:
@@ -2567,9 +2808,22 @@ def _backfill_run_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     for source, target, fallback in (
         ("counts_json", "counts", {}),
         ("errors_json", "errors", []),
+        ("missing_dates_json", "missing_dates", []),
+        ("payload_hashes_json", "payload_hashes", {}),
+        ("warnings_json", "warnings", []),
+        ("plan_json", "plan", None),
     ):
         value = data.get(source)
         data[target] = json.loads(value) if isinstance(value, str) and value else fallback
+    if "dry_run" in data and data["dry_run"] is not None:
+        data["dry_run"] = bool(data["dry_run"])
+    return data
+
+
+def _backfill_plan_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    data = _row_to_dict(row)
+    if isinstance(data.get("plan_json"), str):
+        data["plan"] = json.loads(data["plan_json"])
     return data
 
 
@@ -2581,6 +2835,19 @@ def _settlement_replay_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     for key in ("bucket_matched", "correction_applied", "fallback_used", "market_rule_verified"):
         if key in data and data[key] is not None:
             data[key] = bool(data[key])
+    return data
+
+
+def _alert_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    data = _row_to_dict(row)
+    value = data.get("details_json")
+    if isinstance(value, str):
+        try:
+            data["details"] = json.loads(value) if value else {}
+        except json.JSONDecodeError:
+            data["details"] = {}
+    else:
+        data["details"] = {}
     return data
 
 

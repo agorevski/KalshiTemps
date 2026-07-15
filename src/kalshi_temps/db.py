@@ -2,11 +2,97 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import hashlib
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 DEFAULT_DB_PATH = Path("data/kalshi_temps.sqlite3")
+
+EXPECTED_TABLES = frozenset(
+    {
+        "app_events",
+        "alert_records",
+        "backfill_plans",
+        "backfill_runs",
+        "calibration_metrics",
+        "cloud_features",
+        "data_sources",
+        "forecast_discussions",
+        "historical_bias",
+        "intraday_features",
+        "kalshi_market_candidates",
+        "kalshi_market_selections",
+        "marine_layer_indicators",
+        "market_rules",
+        "market_snapshots",
+        "model_probability_buckets",
+        "model_run_deltas",
+        "model_run_extractions",
+        "model_runs",
+        "model_spread",
+        "nowcast_snapshots",
+        "observations",
+        "official_observations",
+        "official_outcomes",
+        "paper_live_checklist_entries",
+        "paper_live_prediction_notes",
+        "paper_live_reconciliation_notes",
+        "paper_live_runs",
+        "paper_live_soak_metrics",
+        "prediction_snapshots",
+        "settlement_replays",
+        "source_polls",
+        "station_metadata",
+        "weather_regime_features",
+    }
+)
+EXPECTED_INDEXES = frozenset(
+    {
+        "idx_backfill_runs_source_hash",
+        "idx_alert_records_key",
+        "idx_alert_records_status",
+        "idx_backfill_plans_station",
+        "idx_backfill_runs_plan_hash",
+        "idx_calibration_metrics_group",
+        "idx_cloud_features_observed",
+        "idx_forecast_discussions_issued",
+        "idx_historical_bias_group",
+        "idx_intraday_features_snapshot",
+        "idx_kalshi_candidates_target",
+        "idx_kalshi_candidates_ticker",
+        "idx_kalshi_selections_target",
+        "idx_market_rules_status",
+        "idx_market_snapshots_bucket",
+        "idx_model_deltas_target",
+        "idx_model_runs_target",
+        "idx_nowcast_snapshots_time",
+        "idx_observations_observed_at",
+        "idx_observations_source",
+        "idx_official_observations_observed",
+        "idx_official_outcomes_target",
+        "idx_paper_live_checklist_run",
+        "idx_paper_live_notes_run",
+        "idx_paper_live_reconciliation_run",
+        "idx_paper_live_runs_status",
+        "idx_paper_live_soak_run",
+        "idx_prediction_snapshots_target",
+        "idx_probability_buckets_run",
+        "idx_settlement_replays_ticker",
+        "idx_source_polls_finished",
+        "idx_source_polls_source_collector",
+        "idx_station_metadata_network",
+        "idx_weather_regime_features_extracted",
+    }
+)
+EXPECTED_VIEWS = frozenset({"collector_runs"})
+EXPECTED_SCHEMA_FINGERPRINT = hashlib.sha256(
+    "\n".join(
+        [f"index:{name}" for name in sorted(EXPECTED_INDEXES)]
+        + [f"table:{name}" for name in sorted(EXPECTED_TABLES)]
+        + [f"view:{name}" for name in sorted(EXPECTED_VIEWS)]
+    ).encode("utf-8")
+).hexdigest()
 
 
 def database_path(path: str | os.PathLike[str] | None = None) -> Path:
@@ -458,10 +544,28 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 source_path TEXT NOT NULL,
                 source_hash TEXT NOT NULL,
                 status TEXT NOT NULL CHECK (status IN ('running', 'success', 'partial_failure', 'failed')),
+                plan_hash TEXT,
+                plan_json TEXT,
+                missing_dates_json TEXT NOT NULL DEFAULT '[]',
+                payload_hashes_json TEXT NOT NULL DEFAULT '{}',
+                idempotency_key TEXT,
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                dry_run INTEGER NOT NULL DEFAULT 0,
                 counts_json TEXT NOT NULL DEFAULT '{}',
                 errors_json TEXT NOT NULL DEFAULT '[]',
                 started_at TEXT NOT NULL DEFAULT (datetime('now')),
                 finished_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS backfill_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                plan_hash TEXT NOT NULL UNIQUE,
+                plan_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -502,6 +606,26 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 provenance_url TEXT,
                 is_stale INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS alert_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_key TEXT NOT NULL,
+                alert_day TEXT NOT NULL,
+                source_name TEXT NOT NULL DEFAULT '',
+                severity TEXT NOT NULL CHECK (severity IN ('info', 'warn', 'fail')),
+                code TEXT NOT NULL,
+                message TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+                first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+                resolved_at TEXT,
+                resolved_by TEXT,
+                resolution_notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(alert_key, alert_day, source_name)
             );
 
             CREATE TABLE IF NOT EXISTS source_polls (
@@ -597,10 +721,14 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 ON settlement_replays(ticker, target_date, replayed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_prediction_snapshots_target ON prediction_snapshots(station, target_date, model_name);
             CREATE INDEX IF NOT EXISTS idx_backfill_runs_source_hash ON backfill_runs(source_hash, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_backfill_runs_plan_hash ON backfill_runs(plan_hash, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_backfill_plans_station ON backfill_plans(station, start_date, end_date);
             CREATE INDEX IF NOT EXISTS idx_historical_bias_group ON historical_bias(model_name, regime, station);
             CREATE INDEX IF NOT EXISTS idx_calibration_metrics_group ON calibration_metrics(model_name, station, temperature_bucket);
             CREATE INDEX IF NOT EXISTS idx_source_polls_finished ON source_polls(finished_at DESC);
             CREATE INDEX IF NOT EXISTS idx_source_polls_source_collector ON source_polls(source, collector_name, finished_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_alert_records_status ON alert_records(status, alert_day DESC, severity);
+            CREATE INDEX IF NOT EXISTS idx_alert_records_key ON alert_records(alert_key, alert_day DESC, source_name);
             CREATE INDEX IF NOT EXISTS idx_paper_live_runs_status ON paper_live_runs(status, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_paper_live_checklist_run ON paper_live_checklist_entries(run_id, checklist_date DESC);
             CREATE INDEX IF NOT EXISTS idx_paper_live_notes_run ON paper_live_prediction_notes(run_id, recorded_at DESC);
@@ -703,6 +831,19 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 "error_message": "TEXT",
                 "source_url": "TEXT",
                 "payload_hash": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "backfill_runs",
+            {
+                "plan_hash": "TEXT",
+                "plan_json": "TEXT",
+                "missing_dates_json": "TEXT NOT NULL DEFAULT '[]'",
+                "payload_hashes_json": "TEXT NOT NULL DEFAULT '{}'",
+                "idempotency_key": "TEXT",
+                "warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+                "dry_run": "INTEGER NOT NULL DEFAULT 0",
             },
         )
         _ensure_columns(

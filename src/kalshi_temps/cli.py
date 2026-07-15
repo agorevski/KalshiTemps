@@ -7,7 +7,7 @@ import sys
 
 from pathlib import Path
 
-from .backfill import run_backfill
+from .backfill import create_backfill_plan, run_backfill
 from .calibration import export_report_json
 from .db import connection
 from .db import initialize_database
@@ -27,7 +27,8 @@ from .ingest import (
     run_metar_collector,
 )
 from .kalshi import KalshiClient, find_seattle_temperature_candidates, kalshi_config_from_env
-from .ops import backup_path, ops_status
+from .monitoring import export_daily_report
+from .ops import OpsError, backup_path, db_check, ops_status, prune_backups, verify_backup_file
 from .paper_live import (
     close_run as close_paper_live_run,
     list_runs as list_paper_live_runs,
@@ -38,6 +39,13 @@ from .paper_live import (
     start_run as start_paper_live_run,
 )
 from .repository import WeatherRepository
+from .scheduler import (
+    DEFAULT_LOCKFILE,
+    DEFAULT_LOCK_STALE_SECONDS,
+    parse_timeout_overrides,
+    run_scheduled_collectors,
+    scheduler_status,
+)
 from .seed import seed_demo_data
 from .nowcast import generate_fixed_nowcast_snapshots
 from .weather_features import extract_discussion_features, normalize_cloud_feature
@@ -97,17 +105,48 @@ def build_parser() -> argparse.ArgumentParser:
     list_official_obs.add_argument("--limit", type=int, default=50)
 
     run_parser = subparsers.add_parser("run-collectors", help="Run NWS and METAR collectors once with poll records")
-    run_parser.add_argument("--nws-url", default=DEFAULT_NWS_SEW_DISCUSSION_URL, help="Text forecast discussion URL")
-    run_parser.add_argument("--metar-station", default="KSEA", help="METAR station id")
-    run_parser.add_argument("--metar-url", help="Raw METAR URL")
-    run_parser.add_argument("--timeout", type=float, default=10, help="Collector request timeout in seconds")
-    run_parser.add_argument("--max-attempts", type=int, default=1, help="Retry-ready attempt count; no daemon is started")
+    _add_scheduled_collector_arguments(run_parser)
+
+    scheduled_parser = subparsers.add_parser(
+        "run-scheduled-collectors",
+        help="Run selected collectors once with a scheduler lock and explicit summary",
+    )
+    _add_scheduled_collector_arguments(scheduled_parser)
+
+    scheduler_status_parser = subparsers.add_parser("scheduler-status", help="Print scheduler lock and collector health status")
+    scheduler_status_parser.add_argument("--lockfile", default=str(DEFAULT_LOCKFILE), help="Scheduler lockfile path")
+    scheduler_status_parser.add_argument(
+        "--lock-stale-seconds", type=float, default=DEFAULT_LOCK_STALE_SECONDS, help="Seconds before a lock is stale"
+    )
+    scheduler_status_parser.add_argument("--max-age-minutes", type=float, default=180, help="Collector freshness threshold")
 
     runs_parser = subparsers.add_parser("collector-runs", help="List persisted collector poll runs")
     runs_parser.add_argument("--limit", type=int, default=20, help="Maximum runs to print")
 
     health_parser = subparsers.add_parser("collector-health", help="Summarize collector freshness and failures")
     health_parser.add_argument("--max-age-minutes", type=float, default=180, help="Freshness threshold in minutes")
+
+    monitoring_parser = subparsers.add_parser("run-monitoring-checks", help="Evaluate local monitoring checks and persist alert records")
+    monitoring_parser.add_argument("--high-spread-threshold-f", type=float, default=4.0)
+    monitoring_parser.add_argument("--alert-day", help="Alert day YYYY-MM-DD; defaults to today UTC")
+
+    list_alerts_parser = subparsers.add_parser("list-alerts", help="List persisted monitoring alerts")
+    list_alerts_parser.add_argument("--include-resolved", action="store_true")
+    list_alerts_parser.add_argument("--severity", choices=("info", "warn", "fail"))
+    list_alerts_parser.add_argument("--limit", type=int, default=100)
+
+    resolve_alert_parser = subparsers.add_parser("resolve-alert", help="Resolve a monitoring alert by id or idempotency key")
+    resolve_alert_parser.add_argument("--id", dest="alert_id", type=int)
+    resolve_alert_parser.add_argument("--key", dest="alert_key")
+    resolve_alert_parser.add_argument("--day", dest="alert_day")
+    resolve_alert_parser.add_argument("--source-name", default="")
+    resolve_alert_parser.add_argument("--resolved-by")
+    resolve_alert_parser.add_argument("--notes")
+
+    daily_report_parser = subparsers.add_parser("export-daily-report", help="Export daily monitoring report as JSON or Markdown")
+    daily_report_parser.add_argument("--output", required=True)
+    daily_report_parser.add_argument("--format", choices=("json", "markdown"), help="Defaults from output extension")
+    daily_report_parser.add_argument("--report-date")
 
     import_models = subparsers.add_parser(
         "import-model-highs",
@@ -168,6 +207,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     backup_parser = subparsers.add_parser("backup-path", help="Print the next timestamped SQLite backup path")
     backup_parser.add_argument("--backup-dir", default="data/backups", help="Directory where backups are stored")
+
+    db_check_parser = subparsers.add_parser("db-check", help="Run SQLite quick/integrity and expected schema checks")
+    db_check_parser.add_argument("--full", action="store_true", help="Run PRAGMA integrity_check instead of quick_check")
+
+    verify_backup_parser = subparsers.add_parser("verify-backup", help="Verify a SQLite backup is readable and healthy")
+    verify_backup_parser.add_argument("backup", help="Backup file to verify")
+
+    prune_parser = subparsers.add_parser("prune-backups", help="Prune old SQLite backups safely")
+    prune_parser.add_argument("--backup-dir", default="data/backups", help="Directory where backups are stored")
+    prune_parser.add_argument("--older-than-days", type=int, default=30, help="Only prune backups older than this")
+    prune_parser.add_argument("--keep", type=int, default=5, help="Always keep at least this many newest backups")
+    prune_parser.add_argument("--min-keep", type=int, default=1, help="Hard minimum backups that must remain")
+    prune_parser.add_argument("--dry-run", action="store_true", default=True, help="Preview candidates without deleting")
+    prune_parser.add_argument("--delete", action="store_true", help="Actually delete prunable backups")
 
     add_rule_parser = subparsers.add_parser("add-market-rule", help="Add or update explicit market rule metadata")
     _add_market_rule_arguments(add_rule_parser)
@@ -254,8 +307,20 @@ def build_parser() -> argparse.ArgumentParser:
     calibration_parser.add_argument("--split-date", help="Optional test split date for leakage-safe validation")
     calibration_parser.add_argument("--gap-days", type=int, default=0, help="Gap days to withhold before split date")
 
-    backfill_parser = subparsers.add_parser("run-backfill", help="Replay frozen JSON/CSV fixture bundle into SQLite")
-    backfill_parser.add_argument("source", help="Fixture directory or JSON/CSV fixture file")
+    plan_parser = subparsers.add_parser("create-backfill-plan", help="Create/print a historical public-observation backfill plan")
+    plan_parser.add_argument("--station", required=True, help="Station id, e.g. KSEA")
+    plan_parser.add_argument("--start-date", required=True, help="Inclusive YYYY-MM-DD")
+    plan_parser.add_argument("--end-date", required=True, help="Inclusive YYYY-MM-DD")
+    plan_parser.add_argument("--source-kind", default="noaa_daily", choices=("noaa_daily", "nws_hourly", "metar_hourly", "fixture"))
+    plan_parser.add_argument("--fixture-root", help="Root directory for fixture plans")
+    plan_parser.add_argument("--output", help="Optional JSON plan output path")
+    plan_parser.add_argument("--persist", action="store_true", help="Persist plan metadata to SQLite")
+
+    backfill_parser = subparsers.add_parser("run-backfill", help="Replay frozen JSON/CSV fixture bundle or historical plan into SQLite")
+    backfill_parser.add_argument("source", nargs="?", help="Fixture directory or JSON/CSV fixture file")
+    backfill_parser.add_argument("--plan-file", help="Plan JSON from create-backfill-plan")
+    backfill_parser.add_argument("--dry-run", action="store_true", help="Persist run metadata without importing records")
+    backfill_parser.add_argument("--allow-network", action="store_true", help="Allow planned URL fetches; tests should inject fetchers instead")
 
     report_parser = subparsers.add_parser("calibration-report", help="Compute and export calibration report JSON")
     report_parser.add_argument("--bins", type=int, default=10, help="Reliability bin count")
@@ -651,6 +716,35 @@ def compute_and_export_calibration_report(
     return report
 
 
+def run_monitoring_checks_command(
+    db_path: str | None,
+    *,
+    high_spread_threshold_f: float = 4.0,
+    alert_day: str | None = None,
+) -> dict[str, object]:
+    initialize_database(db_path)
+    with connection(db_path) as conn:
+        return WeatherRepository(conn).run_monitoring_checks(
+            high_spread_threshold_f=high_spread_threshold_f,
+            alert_day=alert_day,
+        )
+
+
+def export_daily_monitoring_report(
+    db_path: str | None,
+    *,
+    output_path: str,
+    report_date: str | None = None,
+    output_format: str | None = None,
+) -> dict[str, object]:
+    initialize_database(db_path)
+    with connection(db_path) as conn:
+        report = WeatherRepository(conn).daily_monitoring_report(report_date=report_date)
+    markdown = output_format == "markdown" if output_format else None
+    export_daily_report(report, output_path, markdown=markdown)
+    return report
+
+
 def replay_settlement_command(
     db_path: str | None,
     *,
@@ -738,32 +832,40 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(rows, indent=2, sort_keys=True))
         return 0
 
-    if args.command == "run-collectors":
-        initialize_database(args.db)
-        results = [
-            run_forecast_discussion_collector(
-                url=args.nws_url,
+    if args.command in {"run-collectors", "run-scheduled-collectors"}:
+        try:
+            summary = run_scheduled_collectors(
+                args.db,
+                collectors=_scheduled_collectors_from_args(args),
+                lockfile=args.lockfile,
+                stale_after_seconds=args.lock_stale_seconds,
+                dry_run=args.dry_run,
                 timeout=args.timeout,
+                timeout_overrides=parse_timeout_overrides(args.collector_timeout),
                 max_attempts=args.max_attempts,
-            ),
-            run_metar_collector(
-                station=args.metar_station,
-                url=args.metar_url,
-                timeout=args.timeout,
-                max_attempts=args.max_attempts,
-            ),
-        ]
-        with connection(args.db) as conn:
-            repo = WeatherRepository(conn)
-            for result in results:
-                repo.record_collector_run(result.poll_record())
-                if result.succeeded and result.collector_name == "nws_discussion":
-                    repo.save_forecast_discussion(result.source, result.records[0])
-                elif result.succeeded and result.collector_name == "metar":
-                    repo.save_observation_record(result.source, result.records[0])
-        for result in results:
-            print(f"{result.collector_name}\t{result.status}\t{result.records_returned}\t{result.error_message or ''}")
-        return 0 if all(result.succeeded for result in results) else 1
+                metar_station=args.metar_station,
+                nws_url=args.nws_url,
+                metar_url=args.metar_url,
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(f"Scheduled collectors failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0 if summary["status"] == "success" else 1
+
+    if args.command == "scheduler-status":
+        try:
+            status = scheduler_status(
+                args.db,
+                lockfile=args.lockfile,
+                stale_after_seconds=args.lock_stale_seconds,
+                max_age_minutes=args.max_age_minutes,
+            )
+        except RuntimeError as exc:
+            print(f"Scheduler status failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(status, indent=2, sort_keys=True))
+        return 0
 
     if args.command == "collector-runs":
         initialize_database(args.db)
@@ -777,6 +879,56 @@ def main(argv: list[str] | None = None) -> int:
         with connection(args.db) as conn:
             rows = WeatherRepository(conn).collector_health_summaries(max_age_minutes=args.max_age_minutes)
         print(json.dumps(rows, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "run-monitoring-checks":
+        result = run_monitoring_checks_command(
+            args.db,
+            high_spread_threshold_f=args.high_spread_threshold_f,
+            alert_day=args.alert_day,
+        )
+        fail_count = sum(1 for check in result["checks"] if check["severity"] == "fail")
+        warn_count = sum(1 for check in result["checks"] if check["severity"] == "warn")
+        print(f"Recorded {len(result['alerts'])} monitoring alert(s): {fail_count} fail, {warn_count} warn")
+        return 0
+
+    if args.command == "list-alerts":
+        initialize_database(args.db)
+        with connection(args.db) as conn:
+            rows = WeatherRepository(conn).list_alert_records(
+                include_resolved=args.include_resolved,
+                severity=args.severity,
+                limit=args.limit,
+            )
+        print(json.dumps(rows, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "resolve-alert":
+        initialize_database(args.db)
+        try:
+            with connection(args.db) as conn:
+                alert = WeatherRepository(conn).resolve_alert_record(
+                    alert_id=args.alert_id,
+                    alert_key=args.alert_key,
+                    alert_day=args.alert_day,
+                    source_name=args.source_name,
+                    resolved_by=args.resolved_by,
+                    notes=args.notes,
+                )
+        except (KeyError, ValueError) as exc:
+            print(f"Alert resolution failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"Resolved alert {alert['id']} {alert['alert_key']}")
+        return 0
+
+    if args.command == "export-daily-report":
+        report = export_daily_monitoring_report(
+            args.db,
+            output_path=args.output,
+            report_date=args.report_date,
+            output_format=args.format,
+        )
+        print(f"Exported daily report to {args.output} ({len(report['unresolved_alerts'])} unresolved alert(s))")
         return 0
 
     if args.command in {"import-model-highs", "import-model-forecasts"}:
@@ -858,6 +1010,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "backup-path":
         print(backup_path(args.db, args.backup_dir))
+        return 0
+
+    if args.command == "db-check":
+        result = db_check(args.db, quick=not args.full)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["ok"] else 1
+
+    if args.command == "verify-backup":
+        result = verify_backup_file(args.backup)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["ok"] else 1
+
+    if args.command == "prune-backups":
+        try:
+            result = prune_backups(
+                args.backup_dir,
+                older_than_days=args.older_than_days,
+                keep=args.keep,
+                min_keep=args.min_keep,
+                dry_run=not args.delete,
+            )
+        except OpsError as exc:
+            print(f"Prune failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 
     if args.command == "add-market-rule":
@@ -1026,12 +1203,42 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Exported calibration report to {args.export}")
         return 0
 
+    if args.command == "create-backfill-plan":
+        plan = create_backfill_plan(
+            station=args.station,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            source_kind=args.source_kind,
+            fixture_root=args.fixture_root,
+        )
+        if args.persist:
+            initialize_database(args.db)
+            with connection(args.db) as conn:
+                WeatherRepository(conn).save_backfill_plan(plan)
+        text = json.dumps(plan, indent=2, sort_keys=True)
+        if args.output:
+            Path(args.output).write_text(text + "\n", encoding="utf-8")
+            print(f"Wrote backfill plan {plan['plan_hash']} to {args.output}")
+        else:
+            print(text)
+        return 0
+
     if args.command == "run-backfill":
-        result = run_backfill(args.db, args.source)
+        plan = None
+        if args.plan_file:
+            plan = json.loads(Path(args.plan_file).read_text(encoding="utf-8"))
+        fetcher = None
+        if args.allow_network:
+            from .ingest import fetch_text
+
+            fetcher = fetch_text
+        result = run_backfill(args.db, args.source, plan=plan, fetcher=fetcher, dry_run=args.dry_run)
         print(
             f"Backfill {result['status']} from {result['source_path']}: "
             f"{json.dumps(result['counts'], sort_keys=True)}"
         )
+        if result.get("warnings"):
+            print(json.dumps(result["warnings"], indent=2, sort_keys=True), file=sys.stderr)
         if result["errors"]:
             print(json.dumps(result["errors"], indent=2, sort_keys=True), file=sys.stderr)
         return 0 if result["status"] in {"success", "partial_failure"} else 1
@@ -1124,6 +1331,44 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 2
+
+
+def _add_scheduled_collector_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--collectors",
+        help="Comma-separated collector names to run; defaults to all scheduler collectors",
+    )
+    parser.add_argument(
+        "--collector",
+        action="append",
+        default=[],
+        help="Collector name to run; may be repeated and combined with --collectors",
+    )
+    parser.add_argument("--nws-url", default=DEFAULT_NWS_SEW_DISCUSSION_URL, help="Text forecast discussion URL")
+    parser.add_argument("--metar-station", default="KSEA", help="METAR station id")
+    parser.add_argument("--metar-url", help="Raw METAR URL")
+    parser.add_argument("--timeout", type=float, default=10, help="Default collector request timeout in seconds")
+    parser.add_argument(
+        "--collector-timeout",
+        action="append",
+        default=[],
+        metavar="NAME=SECONDS",
+        help="Per-collector timeout override; may be repeated",
+    )
+    parser.add_argument("--max-attempts", type=int, default=1, help="Retry-ready attempt count; no daemon is started")
+    parser.add_argument("--lockfile", default=str(DEFAULT_LOCKFILE), help="Scheduler lockfile path")
+    parser.add_argument(
+        "--lock-stale-seconds", type=float, default=DEFAULT_LOCK_STALE_SECONDS, help="Seconds before a lock is stale"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Plan collectors without network calls or database writes")
+
+
+def _scheduled_collectors_from_args(args: argparse.Namespace) -> list[str] | None:
+    values: list[str] = []
+    if args.collectors:
+        values.append(args.collectors)
+    values.extend(args.collector or [])
+    return values or None
 
 
 def _add_market_rule_arguments(parser: argparse.ArgumentParser) -> None:
