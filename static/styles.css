@@ -96,3 +96,13 @@ small { color: var(--muted); display: block; margin-top: 4px; line-height: 1.35;
   .signal-row, .audit-row, .market-row-top { flex-direction: row; align-items: center; }
   .freshness-row b { max-width: 100%; }
 }
+
+.card a { color: var(--blue); font-weight: 800; text-decoration: none; }
+.card a:hover { text-decoration: underline; }
+.good-pill { background: var(--green-soft); color: var(--green); }
+.delta-row b { color: var(--amber); }
+.workflow-step a { color: inherit; text-decoration: underline; }
+@media (max-width: 700px) {
+  .status-grid { gap: 12px; }
+  .metric-card strong { font-size: clamp(2.8rem, 18vw, 4.5rem); }
+}

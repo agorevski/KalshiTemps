@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Seattle High-Temperature Evidence</title>
+    <title>Seattle High-Temperature Research Workflow</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
   </head>
   <body>
@@ -11,7 +11,7 @@
       <header class="hero">
         <p class="eyebrow">Kalshi Temps · research dashboard</p>
         <h1>Seattle high-temperature evidence</h1>
-        <p class="lede">Phone-friendly view of a six-layer probability workflow for the KSEA daily high.</p>
+        <p class="lede">Mobile-friendly, evidence-only workflow for KSEA daily high research. Unavailable data is shown as unavailable, not inferred.</p>
       </header>
 
       <section class="topline" aria-label="Dashboard summary">
@@ -27,71 +27,74 @@
         </article>
 
         <article class="card caution">
-          <span class="section-label">Settlement verification caveat</span>
-          <strong>Use market rules as the authority.</strong>
-          <span>KSEA settlement source and exact criteria still need verification from official market rules. Robinhood/Kalshi indications are research inputs, not settlement authority.</span>
+          <span class="section-label">Caveats</span>
+          <strong>No financial advice · no automated trading</strong>
+          <span>This dashboard is a research surface only. Verify official market rules and settlement sources before using any probability evidence.</span>
         </article>
       </section>
 
       <section class="workflow card" aria-labelledby="workflow-title">
         <div class="section-heading">
-          <span class="section-label">Six-layer workflow</span>
-          <h2 id="workflow-title">Evidence stack</h2>
+          <span class="section-label">Research workflow</span>
+          <h2 id="workflow-title">Roadmap foundations surfaced</h2>
         </div>
         <div class="workflow-grid">
-          <div class="workflow-step active">
+          <div class="workflow-step {{ 'active' if market_verification and market_verification.is_actionable else 'placeholder' }}">
             <span>1</span>
-            <strong>Raw forecast spread</strong>
-            <small>{% if model_spread %}{{ "%.1f"|format(model_spread.spread_f) }}°F disagreement across {{ model_spread.model_count }} models{% else %}Awaiting model spread{% endif %}</small>
+            <strong>Market rule verification</strong>
+            <small>{% if market_verification and market_verification.ticker %}{{ market_verification.ticker }} · {{ market_verification.reason }}{% else %}No market rule verified yet{% endif %}</small>
           </div>
-          <div class="workflow-step active">
+          <div class="workflow-step {{ 'active' if collector_health else 'placeholder' }}">
             <span>2</span>
-            <strong>Marine layer/cloud timing</strong>
-            <small>Cleared-before-10AM signal highlighted below</small>
+            <strong>Collector health</strong>
+            <small>{% if collector_health %}{{ collector_health|length }} collectors monitored{% else %}No source poll history yet{% endif %}</small>
           </div>
-          <div class="workflow-step active">
+          <div class="workflow-step {{ 'active' if model_spread else 'placeholder' }}">
             <span>3</span>
-            <strong>KSEA + surrounding observations</strong>
-            <small>{% if daily_high %}Current max {{ "%.1f"|format(daily_high.high_temperature_f) }}°F{% else %}No current max yet{% endif %}</small>
+            <strong>Model ingestion/spread</strong>
+            <small>{% if model_spread %}{{ "%.1f"|format(model_spread.spread_f) }}°F spread · {{ model_spread.model_count }} models{% else %}Awaiting model spread{% endif %}</small>
           </div>
-          <div class="workflow-step placeholder">
+          <div class="workflow-step {{ 'active' if weather_regime_features or intraday_features else 'placeholder' }}">
             <span>4</span>
-            <strong>Historical bias</strong>
-            <small>Placeholder for model/site bias checks</small>
+            <strong>Weather features</strong>
+            <small>{% if weather_regime_features or intraday_features %}Regime/intraday extracts available{% else %}No extracted weather features yet{% endif %}</small>
           </div>
-          <div class="workflow-step placeholder">
+          <div class="workflow-step {{ 'active' if bias_summaries or calibration_metrics or outcomes else 'placeholder' }}">
             <span>5</span>
-            <strong>Live intraday nowcast</strong>
-            <small>Placeholder for same-day update logic</small>
+            <strong>Historical calibration</strong>
+            <small>{% if bias_summaries or calibration_metrics %}Bias/calibration metrics populated{% elif outcomes %}Outcomes captured; metrics pending{% else %}No historical outcomes yet{% endif %}</small>
           </div>
           <div class="workflow-step active">
             <span>6</span>
-            <strong>Market-implied probabilities</strong>
-            <small>{% if market_snapshots %}Latest bucket probabilities below{% else %}No market snapshots yet{% endif %}</small>
+            <strong>Ops/access posture</strong>
+            <small><a href="/api/ops/status">Open ops status JSON</a></small>
           </div>
         </div>
       </section>
 
-      <section class="status-grid" aria-label="Freshness and audit status">
+      <section class="status-grid" aria-label="Status overview">
         <article class="card compact-card">
-          <span class="section-label">Freshness status</span>
-          {% if sources %}
-            <strong>{{ sources|length }} sources watched</strong>
-            <small>Latest timestamps are shown per source; stale checks remain visible in audit events.</small>
+          <span class="section-label">Collector staleness</span>
+          {% if collector_health %}
+            <strong>{{ collector_health|selectattr('is_stale')|list|length }} stale / {{ collector_health|length }} collectors</strong>
+            <small>Health is based on latest source polls and configured max age.</small>
+          {% elif sources %}
+            <strong>No poll history</strong>
+            <small>{{ sources|length }} data sources exist, but collectors have not recorded source polls.</small>
           {% else %}
             <strong>No sources configured</strong>
-            <small>Add sources before relying on freshness cues.</small>
+            <small>Add or seed sources before relying on freshness cues.</small>
           {% endif %}
         </article>
         <article class="card compact-card">
-          <span class="section-label">Product status</span>
-          {% if fusion_summary and fusion_summary.product_status %}
-            <strong>{{ fusion_summary.product_status.label }}</strong>
-            <small>{{ fusion_summary.product_status.summary }}</small>
-            <small>{{ fusion_summary.product_status.active_guard_count }} active guards · {{ fusion_summary.product_status.stale_source_count }} stale sources</small>
+          <span class="section-label">Ops/access posture</span>
+          {% if ops %}
+            <strong>Database {{ 'ok' if ops.database.ok else 'needs review' }}</strong>
+            <small>Disk {{ 'ok' if ops.disk.ok else 'low space' }} · access {{ ops.access.posture }}</small>
+            <small><a href="/api/ops/status">View sanitized ops endpoint</a></small>
           {% else %}
-            <strong>No status available</strong>
-            <small>Seed demo data or collect observations to populate the research view.</small>
+            <strong>No ops status available</strong>
+            <small>Use /api/ops/status when the service is running.</small>
           {% endif %}
         </article>
       </section>
@@ -99,12 +102,60 @@
       <section class="grid">
         <article class="card feature-card">
           <div class="section-heading">
-            <span class="section-label">Layer 1</span>
-            <h2>Forecast model disagreement</h2>
+            <span class="section-label">1 · Rules</span>
+            <h2>Market verification/actionability</h2>
+          </div>
+          {% if market_verification %}
+            <p class="pill {{ 'good-pill' if market_verification.is_actionable else 'warning-pill' }}">{{ 'Actionable research input' if market_verification.is_actionable else 'Not actionable yet' }}</p>
+            <small class="card-note">{{ market_verification.reason }}</small>
+          {% else %}
+            <p class="pill muted-pill">Verification unavailable</p>
+          {% endif %}
+          <div class="list">
+            {% for rule in market_rules %}
+              <div class="row">
+                <div>
+                  <strong>{{ rule.ticker }}</strong>
+                  <small>{{ rule.official_source_name or 'official source missing' }} · {{ rule.official_station_id or 'station missing' }}</small>
+                  <small>{{ rule.verification_status }} · {{ rule.source_url or 'source URL unavailable' }}</small>
+                </div>
+                <span class="badge {{ 'good' if rule.verification_status == 'verified' else 'neutral' }}">{{ rule.verification_status }}</span>
+              </div>
+            {% else %}
+              <p class="empty">No market rules have been recorded.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card feature-card">
+          <div class="section-heading">
+            <span class="section-label">2 · Collectors</span>
+            <h2>Collector health/staleness</h2>
+          </div>
+          <div class="list">
+            {% for item in collector_health %}
+              <div class="row freshness-row">
+                <div>
+                  <strong>{{ item.collector_name }} · {{ item.source }}</strong>
+                  <small>Last finished {{ item.last_finished_at }} · records {{ item.records_returned }}</small>
+                  <small>{{ item.error_message or ('newest observation ' ~ (item.newest_observation_at or 'unknown')) }}</small>
+                </div>
+                <span class="badge {{ 'bad' if item.is_stale else 'good' }}">{{ item.label }}</span>
+              </div>
+            {% else %}
+              <p class="empty">No collector poll records yet.</p>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card feature-card">
+          <div class="section-heading">
+            <span class="section-label">3 · Models</span>
+            <h2>Forecast ingestion, spread, and deltas</h2>
           </div>
           {% if model_spread %}
             <p class="pill warning-pill">{{ "%.1f"|format(model_spread.spread_f) }}°F spread · {{ model_spread.model_count }} models</p>
-            <small class="card-note">Calculated {{ model_spread.calculated_at }}</small>
+            <small class="card-note">Run deltas: {{ model_spread.run_change_count or 0 }} · mean {{ "%.1f"|format(model_spread.mean_run_change_f) if model_spread.mean_run_change_f is not none else "—" }}°F</small>
           {% else %}
             <p class="pill muted-pill">Spread pending</p>
           {% endif %}
@@ -121,15 +172,45 @@
             {% else %}
               <p class="empty">No forecast model runs yet.</p>
             {% endfor %}
+            {% for delta in bucket_deltas[:4] %}
+              <div class="row delta-row">
+                <div>
+                  <strong>{{ delta.bucket }}</strong>
+                  <small>Model {{ "%.0f"|format(delta.model_probability * 100) if delta.model_probability is not none else "—" }}% · market {{ "%.0f"|format(delta.market_probability * 100) if delta.market_probability is not none else "—" }}%</small>
+                  <small>{{ delta.note }}</small>
+                </div>
+                <b>{{ "%.0f"|format(delta.expected_edge_cents) if delta.expected_edge_cents is not none else "—" }}¢</b>
+              </div>
+            {% endfor %}
           </div>
         </article>
 
         <article class="card feature-card">
           <div class="section-heading">
-            <span class="section-label">Layer 2</span>
-            <h2>Marine layer/cloud timing</h2>
+            <span class="section-label">4 · Weather features</span>
+            <h2>Regimes and intraday signals</h2>
           </div>
           <div class="list">
+            {% for feature in weather_regime_features %}
+              <div class="row signal-row">
+                <div>
+                  <strong>{{ feature.product_id or feature.discussion_product_id or 'Forecast discussion' }}</strong>
+                  <small>Extracted {{ feature.extracted_at }} · confidence {{ feature.confidence_label }}</small>
+                  <small>Tags: {{ feature.regime_tags|join(', ') if feature.regime_tags else 'none' }}</small>
+                </div>
+                <span class="badge neutral">regime</span>
+              </div>
+            {% endfor %}
+            {% for feature in intraday_features %}
+              <div class="row signal-row">
+                <div>
+                  <strong>{{ feature.station or 'station unknown' }} intraday</strong>
+                  <small>{{ feature.local_snapshot_time }} · max {{ feature.intraday_max_f if feature.intraday_max_f is not none else '—' }}°F · rate {{ feature.warming_rate_f_per_hour if feature.warming_rate_f_per_hour is not none else '—' }}°F/hr</small>
+                  <small>Cloud trend {{ feature.cloud_trend or 'unavailable' }}</small>
+                </div>
+                <span class="badge {{ 'good' if feature.marine_layer_cleared_before_10am else 'neutral' }}">10AM clear: {{ 'yes' if feature.marine_layer_cleared_before_10am else 'unknown/no' }}</span>
+              </div>
+            {% endfor %}
             {% for signal in marine_indicators %}
               <div class="row signal-row">
                 <div>
@@ -137,58 +218,59 @@
                   <small>{{ signal.observed_at }} · cloud {{ signal.cloud_cover_pct if signal.cloud_cover_pct is not none else "—" }}% · ceiling {{ signal.ceiling_ft if signal.ceiling_ft is not none else "—" }} ft</small>
                   <small>{{ signal.satellite_trend or signal.notes or "No cloud trend note" }}</small>
                 </div>
-                <span class="badge {{ 'good' if signal.marine_layer_cleared_before_10am else 'neutral' }}">10AM clear: {{ "yes" if signal.marine_layer_cleared_before_10am else "unknown/no" }}</span>
+                <span class="badge {{ 'good' if signal.marine_layer_cleared_before_10am else 'neutral' }}">marine layer</span>
               </div>
             {% else %}
-              <p class="empty">No marine-layer indicators yet.</p>
+              {% if not weather_regime_features and not intraday_features %}<p class="empty">No weather feature extracts yet.</p>{% endif %}
             {% endfor %}
           </div>
         </article>
 
         <article class="card feature-card">
           <div class="section-heading">
-            <span class="section-label">Layer 3</span>
-            <h2>KSEA + surrounding observations</h2>
+            <span class="section-label">5 · Calibration</span>
+            <h2>Historical bias, calibration, outcomes</h2>
           </div>
           <div class="list">
-            {% for obs in observations %}
+            {% for bias in bias_summaries %}
+              <div class="row">
+                <div>
+                  <strong>{{ bias.model_name or 'All models' }} bias</strong>
+                  <small>{{ bias.sample_count }} samples · MAE {{ "%.1f"|format(bias.mean_absolute_error_f) if bias.mean_absolute_error_f is not none else '—' }}°F · RMSE {{ "%.1f"|format(bias.rmse_f) if bias.rmse_f is not none else '—' }}°F</small>
+                  <small>{{ bias.notes }}</small>
+                </div>
+                <b>{{ "%+.1f"|format(bias.mean_error_f) if bias.mean_error_f is not none else '—' }}°F</b>
+              </div>
+            {% endfor %}
+            {% for metric in calibration_metrics %}
+              <div class="row">
+                <div>
+                  <strong>{{ metric.model_name or 'Model' }} · {{ metric.temperature_bucket }}</strong>
+                  <small>{{ metric.sample_count }} samples · Brier {{ "%.3f"|format(metric.brier_score) if metric.brier_score is not none else '—' }}</small>
+                  <small>{{ metric.notes }}</small>
+                </div>
+                <span class="badge neutral">calibration</span>
+              </div>
+            {% endfor %}
+            {% for outcome in outcomes %}
               <div class="row observation-row">
                 <div>
-                  <strong>{{ obs.station }}</strong>
-                  <small>{{ obs.source_name }} · {{ obs.observed_at }}</small>
-                  <small>Dew {{ obs.dew_point_f if obs.dew_point_f is not none else "—" }}°F · wind {{ obs.wind_direction_deg if obs.wind_direction_deg is not none else "—" }}°/{{ obs.wind_speed_mph if obs.wind_speed_mph is not none else "—" }} mph</small>
-                  <small>Pressure {{ obs.pressure_mb if obs.pressure_mb is not none else "—" }} mb · ceiling {{ obs.cloud_ceiling_ft if obs.cloud_ceiling_ft is not none else "—" }} ft · solar {{ obs.solar_radiation_wm2 if obs.solar_radiation_wm2 is not none else "—" }} W/m²</small>
+                  <strong>{{ outcome.station }} outcome</strong>
+                  <small>{{ outcome.target_date }} · {{ outcome.source_name }}</small>
+                  <small>{{ outcome.notes or 'Official outcome captured for later calibration.' }}</small>
                 </div>
-                <b>{{ "%.1f"|format(obs.temperature_f) }}°F</b>
+                <b>{{ "%.1f"|format(outcome.high_temperature_f) }}°F</b>
               </div>
             {% else %}
-              <p class="empty">No observations found.</p>
+              {% if not bias_summaries and not calibration_metrics %}<p class="empty">No historical outcomes or calibration metrics yet.</p>{% endif %}
             {% endfor %}
           </div>
         </article>
 
-        <article class="card feature-card placeholder-card">
-          <div class="section-heading">
-            <span class="section-label">Layer 4</span>
-            <h2>Historical bias placeholder</h2>
-          </div>
-          <p>Reserved for comparing forecast guidance against historical KSEA and nearby-station bias. Treat as a caveat until populated.</p>
-          <div class="placeholder-box">Bias adjustment not yet calculated</div>
-        </article>
-
-        <article class="card feature-card placeholder-card">
-          <div class="section-heading">
-            <span class="section-label">Layer 5</span>
-            <h2>Live intraday nowcast placeholder</h2>
-          </div>
-          <p>Reserved for same-day temperature trajectory and cloud-clearing updates. Current view stays evidence-only until nowcast logic exists.</p>
-          <div class="placeholder-box">Nowcast not yet calculated</div>
-        </article>
-
         <article class="card feature-card market-card">
           <div class="section-heading">
-            <span class="section-label">Layer 6</span>
-            <h2>Market-implied probabilities</h2>
+            <span class="section-label">Market probabilities</span>
+            <h2>Market-implied snapshots</h2>
           </div>
           <div class="list">
             {% for snap in market_snapshots %}
@@ -201,9 +283,7 @@
                   </div>
                   <b>{{ "%.1f"|format(snap.implied_probability * 100) if snap.implied_probability is not none else "—" }}%</b>
                 </div>
-                <div class="prob-track" aria-hidden="true">
-                  <span style="--prob: {{ snap.implied_probability * 100 if snap.implied_probability is not none else 0 }}%;"></span>
-                </div>
+                <div class="prob-track" aria-hidden="true"><span style="--prob: {{ snap.implied_probability * 100 if snap.implied_probability is not none else 0 }}%;"></span></div>
               </div>
             {% else %}
               <p class="empty">No market snapshots yet.</p>
@@ -213,20 +293,21 @@
 
         <article class="card feature-card">
           <div class="section-heading">
-            <span class="section-label">Freshness</span>
-            <h2>Source freshness</h2>
+            <span class="section-label">Observations</span>
+            <h2>KSEA + surrounding observations</h2>
           </div>
           <div class="list">
-            {% for source in sources %}
-              <div class="row freshness-row">
+            {% for obs in observations %}
+              <div class="row observation-row">
                 <div>
-                  <strong>{{ source.name }}</strong>
-                  <small>{{ source.observation_count }} observations</small>
+                  <strong>{{ obs.station }}</strong>
+                  <small>{{ obs.source_name }} · {{ obs.observed_at }}</small>
+                  <small>Dew {{ obs.dew_point_f if obs.dew_point_f is not none else "—" }}°F · wind {{ obs.wind_direction_deg if obs.wind_direction_deg is not none else "—" }}°/{{ obs.wind_speed_mph if obs.wind_speed_mph is not none else "—" }} mph</small>
                 </div>
-                <b>{{ source.latest_observation_at or source.last_seen_at or "never" }}</b>
+                <b>{{ "%.1f"|format(obs.temperature_f) }}°F</b>
               </div>
             {% else %}
-              <p class="empty">No sources configured.</p>
+              <p class="empty">No observations found.</p>
             {% endfor %}
           </div>
         </article>
@@ -234,7 +315,7 @@
         <article class="card feature-card">
           <div class="section-heading">
             <span class="section-label">Audit</span>
-            <h2>Risk guards and stale/freshness events</h2>
+            <h2>Risk guards and source events</h2>
           </div>
           <div class="list">
             {% if fusion_summary and fusion_summary.risk_guards %}
