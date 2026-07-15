@@ -8,6 +8,7 @@ import re
 import shutil
 
 from .db import database_path
+from .auth import access_status
 
 MIN_FREE_BYTES = 50 * 1024 * 1024
 TAILSCALE_DOC = "docs/tailscale-remote-access.md"
@@ -164,6 +165,7 @@ def safe_restore_preflight(
 
 
 def access_posture_summary(host: str = "127.0.0.1", port: int = 8000) -> dict[str, object]:
+    auth = access_status()
     if host in {"127.0.0.1", "::1", "localhost"}:
         posture = "loopback"
         guidance = "Safest local default; use SSH forwarding or Tailscale Serve for remote access."
@@ -182,7 +184,50 @@ def access_posture_summary(host: str = "127.0.0.1", port: int = 8000) -> dict[st
         "posture": posture,
         "guidance": guidance,
         "tailscale_docs": TAILSCALE_DOC,
-        "auth": "not implemented; do not expose beyond trusted local/tailnet access without real authentication",
+        "auth": auth.as_dict(),
+    }
+
+
+def paper_live_readiness(
+    *,
+    active_runs: list[dict[str, object]] | None = None,
+    collector_health: list[dict[str, object]] | None = None,
+    backup_success: bool | None = None,
+) -> dict[str, object]:
+    active_runs = active_runs or []
+    collector_health = collector_health or []
+    stale_collectors = [item for item in collector_health if item.get("is_stale") or item.get("status") == "failed"]
+    blockers: list[str] = []
+    if not active_runs:
+        blockers.append("no active paper-live run")
+    if stale_collectors:
+        blockers.append("collector health needs review")
+    if backup_success is False:
+        blockers.append("latest backup not marked successful")
+    return {
+        "ready": not blockers,
+        "blockers": blockers,
+        "active_run_count": len(active_runs),
+        "stale_collector_count": len(stale_collectors),
+        "backup_success": backup_success,
+        "note": "Readiness is an operational checklist only; it does not enable or recommend automated betting.",
+    }
+
+
+def paper_live_run_status(run: dict[str, object]) -> dict[str, object]:
+    checklist = run.get("checklist") or []
+    soak_metrics = run.get("soak_metrics") or []
+    open_items = [item for item in checklist if isinstance(item, dict) and item.get("status") != "done"]
+    latest_soak = soak_metrics[0] if soak_metrics else None
+    return {
+        "run_id": run.get("id"),
+        "status": run.get("status"),
+        "is_active": run.get("status") == "active",
+        "open_checklist_count": len(open_items),
+        "prediction_note_count": len(run.get("prediction_notes") or []),
+        "reconciliation_note_count": len(run.get("reconciliation_notes") or []),
+        "latest_soak_metric": latest_soak,
+        "no_automated_betting": True,
     }
 
 

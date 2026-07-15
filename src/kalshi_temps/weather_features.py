@@ -101,6 +101,8 @@ def build_intraday_feature_snapshot(
     *,
     snapshot_at: datetime | str | None = None,
     local_tz: str = "America/Los_Angeles",
+    cloud_features: Iterable[Mapping[str, Any]] | None = None,
+    model_spread: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an intraday feature snapshot from text/observation fields only."""
     tz = ZoneInfo(local_tz)
@@ -126,7 +128,9 @@ def build_intraday_feature_snapshot(
     warming_rate = _warming_rate(day_obs, current)
     cloud_trend = _cloud_trend(prior, current)
     cleared = _marine_layer_cleared_before_10am(day_obs, tz)
+    cloud_proxy = _latest_cloud_feature(cloud_features, snapshot_dt, tz)
     source_ids = sorted({obs["source_id"] for obs in day_obs if obs.get("source_id") is not None})
+    age_minutes = round((snapshot_dt - current["_observed_dt"]).total_seconds() / 60, 1)
 
     return {
         "feature_type": "intraday",
@@ -143,10 +147,72 @@ def build_intraday_feature_snapshot(
         "wind_speed_mph": current.get("wind_speed_mph"),
         "pressure_mb": current.get("pressure_mb"),
         "cloud_ceiling_ft": current.get("cloud_ceiling_ft"),
+        "visibility_miles": current.get("visibility_miles"),
+        "solar_radiation_wm2": current.get("solar_radiation_wm2"),
+        "solar_proxy": _solar_proxy(current, snapshot_local, cloud_proxy),
         "cloud_trend": cloud_trend,
+        "ceiling_trend": cloud_trend,
+        "wind_shift": _wind_shift(day_obs),
+        "marine_push_indicator": _marine_push_indicator(day_obs, current),
+        "cloud_feature_id": cloud_proxy.get("id") if cloud_proxy else None,
+        "cloud_cover_pct": cloud_proxy.get("cloud_cover_pct") if cloud_proxy else None,
+        "stratus_extent_pct": cloud_proxy.get("stratus_extent_pct") if cloud_proxy else None,
+        "fog_present": cloud_proxy.get("fog_present") if cloud_proxy else None,
+        "burnoff_status": cloud_proxy.get("burnoff_status") if cloud_proxy else None,
+        "remaining_solar_window_proxy": _remaining_solar_window_proxy(snapshot_local, cloud_proxy),
+        "remaining_upside_distribution": _remaining_upside_placeholder(model_spread),
         "marine_layer_cleared_before_10am": cleared,
-        "unresolved": ["satellite_cloud_extraction"],
+        "observation_age_minutes": age_minutes,
+        "data_status": "stale" if age_minutes > 90 else "fresh",
+        "unresolved": ["remaining_upside_distribution_unmodeled"],
     }
+
+
+def normalize_cloud_feature(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize manual/derived cloud satellite proxy payloads with provenance."""
+    _require_record_fields(record, "source", "observed_at")
+    cloud_cover = _optional_float(record.get("cloud_cover_pct"))
+    stratus_extent = _optional_float(record.get("stratus_extent_pct"))
+    confidence = _optional_float(record.get("confidence"))
+    fog_present = _optional_bool(record.get("fog_present"))
+    normalized = {
+        "feature_type": "cloud_satellite_proxy",
+        "source": str(record["source"]),
+        "observed_at": _datetime_to_iso(_parse_datetime(record["observed_at"]) or datetime.now(LOCAL_TZ)),
+        "cloud_cover_pct": _bounded_pct(cloud_cover, "cloud_cover_pct"),
+        "stratus_extent_pct": _bounded_pct(stratus_extent, "stratus_extent_pct"),
+        "fog_present": fog_present,
+        "burnoff_status": record.get("burnoff_status")
+        or classify_marine_burnoff(
+            cloud_cover_pct=cloud_cover,
+            stratus_extent_pct=stratus_extent,
+            fog_present=fog_present,
+        ),
+        "burnoff_time": record.get("burnoff_time"),
+        "confidence": _bounded_confidence(confidence),
+        "source_url": record.get("source_url"),
+        "source_hash": record.get("source_hash") or record.get("hash") or record.get("raw_payload_hash"),
+        "notes": record.get("notes"),
+    }
+    return normalized
+
+
+def classify_marine_burnoff(
+    *,
+    cloud_cover_pct: float | None = None,
+    stratus_extent_pct: float | None = None,
+    fog_present: bool | None = None,
+) -> str:
+    """Classify marine-layer burnoff from proxy fields without image processing."""
+    if cloud_cover_pct is None and stratus_extent_pct is None and fog_present is None:
+        return "unknown"
+    cloud = 0.0 if cloud_cover_pct is None else float(cloud_cover_pct)
+    stratus = 0.0 if stratus_extent_pct is None else float(stratus_extent_pct)
+    if fog_present or stratus >= 70 or cloud >= 85:
+        return "persistent_marine_layer"
+    if stratus <= 20 and cloud <= 35:
+        return "burned_off"
+    return "partial_burnoff"
 
 
 def _sentences(text: str) -> list[str]:
@@ -203,7 +269,7 @@ def _normalize_observation(obs: Mapping[str, Any], tz: ZoneInfo) -> dict[str, An
     if normalized.get("temperature_f") is None:
         raise ValueError("observation temperature_f is required")
     normalized["temperature_f"] = float(normalized["temperature_f"])
-    for key in ("dew_point_f", "wind_speed_mph", "pressure_mb"):
+    for key in ("dew_point_f", "wind_speed_mph", "pressure_mb", "solar_radiation_wm2", "visibility_miles"):
         if normalized.get(key) is not None:
             normalized[key] = float(normalized[key])
     for key in ("source_id", "wind_direction_deg", "cloud_ceiling_ft"):
@@ -256,6 +322,116 @@ def _marine_layer_cleared_before_10am(day_obs: list[dict[str, Any]], tz: ZoneInf
     if had_low_cloud:
         return cleared
     return None
+
+
+def _latest_cloud_feature(
+        cloud_features: Iterable[Mapping[str, Any]] | None,
+        snapshot_dt: datetime,
+        tz: ZoneInfo,
+) -> dict[str, Any] | None:
+        if not cloud_features:
+            return None
+        eligible = []
+        for feature in cloud_features:
+            observed = _parse_datetime(feature.get("observed_at"))
+            if observed is None:
+                continue
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=tz)
+            if observed <= snapshot_dt:
+                eligible.append((observed, dict(feature)))
+        if not eligible:
+            return None
+        return sorted(eligible, key=lambda item: item[0])[-1][1]
+
+
+def _wind_shift(day_obs: list[dict[str, Any]]) -> dict[str, Any]:
+        dirs = [obs for obs in day_obs if obs.get("wind_direction_deg") is not None]
+        if len(dirs) < 2:
+            return {"detected": False, "degrees": None, "from_deg": None, "to_deg": None}
+        start = dirs[0]["wind_direction_deg"]
+        end = dirs[-1]["wind_direction_deg"]
+        diff = abs((end - start + 180) % 360 - 180)
+        return {"detected": diff >= 45, "degrees": diff, "from_deg": start, "to_deg": end}
+
+
+def _marine_push_indicator(day_obs: list[dict[str, Any]], current: dict[str, Any]) -> str:
+        direction = current.get("wind_direction_deg")
+        speed = current.get("wind_speed_mph") or 0
+        ceiling = current.get("cloud_ceiling_ft")
+        dew = current.get("dew_point_f")
+        temp = current.get("temperature_f")
+        onshore = direction is not None and 180 <= direction <= 300 and speed >= 8
+        low_cloud = ceiling is not None and ceiling <= 2500
+        moist = dew is not None and temp is not None and temp - dew <= 5
+        if onshore and (low_cloud or moist):
+            return "likely"
+        if onshore:
+            return "possible"
+        if len(day_obs) >= 2 and _wind_shift(day_obs)["detected"] and direction is not None and 180 <= direction <= 300:
+            return "possible"
+        return "not_indicated"
+
+
+def _solar_proxy(current: dict[str, Any], snapshot_local: datetime, cloud_proxy: Mapping[str, Any] | None) -> float | None:
+        if current.get("solar_radiation_wm2") is not None:
+            return current["solar_radiation_wm2"]
+        daylight_factor = max(0.0, min(1.0, (18 - snapshot_local.hour) / 11))
+        if snapshot_local.hour < 6 or snapshot_local.hour > 18:
+            return 0.0
+        cloud_cover = cloud_proxy.get("cloud_cover_pct") if cloud_proxy else None
+        cloud_factor = 1.0 - ((float(cloud_cover) / 100) if cloud_cover is not None else 0.5)
+        return round(900 * daylight_factor * max(0.1, cloud_factor), 1)
+
+
+def _remaining_solar_window_proxy(snapshot_local: datetime, cloud_proxy: Mapping[str, Any] | None) -> dict[str, Any]:
+        hours = max(0.0, 18.0 - (snapshot_local.hour + snapshot_local.minute / 60))
+        burnoff = cloud_proxy.get("burnoff_status") if cloud_proxy else None
+        multiplier = 0.35 if burnoff == "persistent_marine_layer" else 0.7 if burnoff == "partial_burnoff" else 1.0
+        return {"hours_remaining": round(hours, 2), "cloud_adjusted_hours": round(hours * multiplier, 2), "burnoff_status": burnoff}
+
+
+def _remaining_upside_placeholder(model_spread: Mapping[str, Any] | None) -> dict[str, Any]:
+        return {
+            "placeholder": True,
+            "model_spread_f": model_spread.get("spread_f") if model_spread else None,
+            "mean_high_f": model_spread.get("mean_high_f") if model_spread else None,
+            "note": "Distribution not modeled yet; uncertainty visible and not a deterministic trade call.",
+        }
+
+
+def _bounded_pct(value: float | None, field: str) -> float | None:
+        if value is None:
+            return None
+        if not 0 <= value <= 100:
+            raise ValueError(f"{field} must be between 0 and 100")
+        return value
+
+
+def _bounded_confidence(value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not 0 <= value <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+        return value
+
+
+def _optional_float(value: Any) -> float | None:
+        return None if value in (None, "") else float(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _require_record_fields(record: Mapping[str, Any], *fields: str) -> None:
+        for field in fields:
+            if record.get(field) in (None, ""):
+                raise ValueError(f"{field} is required")
 
 
 def _parse_datetime(value: datetime | str | None) -> datetime | None:

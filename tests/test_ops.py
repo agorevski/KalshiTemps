@@ -17,6 +17,8 @@ from kalshi_temps.ops import (
     backup_path,
     check_db_path,
     disk_free_status,
+    paper_live_readiness,
+    paper_live_run_status,
     safe_restore_preflight,
     validate_backup_source,
 )
@@ -78,4 +80,32 @@ def test_access_posture_summary_classifies_binding_risk() -> None:
     assert broad["posture"] == "broad-bind"
     assert tailnet["posture"] == "tailscale-ip"
     assert broad["tailscale_docs"] == "docs/tailscale-remote-access.md"
-    assert "not implemented" in broad["auth"]
+    assert broad["auth"]["mode"] in {"open-local-dev", "env-token"}
+
+
+def test_paper_live_ops_helpers_summarize_readiness_and_run_status() -> None:
+    readiness = paper_live_readiness(
+        active_runs=[{"id": 1}],
+        collector_health=[{"collector_name": "metar", "status": "success", "is_stale": False}],
+        backup_success=True,
+    )
+    assert readiness["ready"] is True
+    assert readiness["note"].startswith("Readiness")
+
+    blocked = paper_live_readiness(active_runs=[], collector_health=[{"status": "failed"}], backup_success=False)
+    assert blocked["ready"] is False
+    assert "no active paper-live run" in blocked["blockers"]
+
+    status = paper_live_run_status(
+        {
+            "id": 7,
+            "status": "active",
+            "checklist": [{"status": "pending"}, {"status": "done"}],
+            "prediction_notes": [{"id": 1}],
+            "reconciliation_notes": [],
+            "soak_metrics": [{"alert_count": 0}],
+        }
+    )
+    assert status["is_active"] is True
+    assert status["open_checklist_count"] == 1
+    assert status["no_automated_betting"] is True

@@ -8,6 +8,8 @@ from typing import Any, Iterable, Mapping
 PASS = "pass"
 WARN = "warn"
 FAIL = "fail"
+_UNSET = object()
+KNOWN_MODEL_NAMES = {"HRRR", "NAM", "GFS", "NBM", "ECMWF", "GRAPHCAST", "GRAPHCAST/AI", "PLACEHOLDER BLEND"}
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ def validate_observation(
     future_tolerance_minutes: float = 5,
     dew_point_tolerance_f: float = 0.5,
     context_observations: Iterable[Mapping[str, Any]] | None = None,
+    station_metadata: Mapping[str, Any] | None | object = _UNSET,
 ) -> QualityReport:
     """Validate one Seattle-area temperature observation with deterministic checks."""
     checks: list[QualityCheck] = []
@@ -104,7 +107,48 @@ def validate_observation(
     if context_observations is not None and station and observed_at is not None and temperature is not None:
         checks.extend(_observation_context_checks(observation, context_observations, station, observed_at, temperature))
 
+    if station is not None and station_metadata is not _UNSET:
+        checks.extend(_station_metadata_checks(station, station_metadata, observed_at=observed_at))
+
     return _report(checks)
+
+
+def validate_station_metadata(metadata: Mapping[str, Any]) -> QualityReport:
+    """Validate official/proxy weather station metadata completeness."""
+    checks: list[QualityCheck] = []
+    station = _optional_text(metadata, "station_id") or _optional_text(metadata, "station")
+    _require_present(checks, "station-metadata-station-id", station, "Station metadata id is required")
+    _presence_warning(checks, metadata, "name", "Station metadata name is missing")
+    _presence_warning(checks, metadata, "network", "Station metadata network is missing")
+    _range_check(checks, "station-latitude-range", _optional_float(metadata, "latitude"), -90, 90, "Station latitude is valid")
+    _range_check(checks, "station-longitude-range", _optional_float(metadata, "longitude"), -180, 180, "Station longitude is valid")
+    source_class = (_optional_text(metadata, "source_class") or "").lower()
+    if not source_class:
+        checks.append(_warn("station-source-class-missing", "Station source_class is missing"))
+    elif source_class in {"official", "primary_official", "noaa", "nws", "asos_awos"}:
+        checks.append(_pass("station-source-class-official", "Station is marked as an official source class"))
+    elif source_class in {"proxy", "nearby_proxy", "unofficial"}:
+        checks.append(_warn("station-source-class-proxy", "Station is marked as a proxy source class"))
+    else:
+        checks.append(_warn("station-source-class-unknown", f"Station source_class is not recognized: {source_class}"))
+    _presence_warning(checks, metadata, "timezone", "Station timezone is missing")
+    _presence_warning(checks, metadata, "metadata_hash", "Station metadata hash is missing")
+    return _report(checks)
+
+
+def validate_official_observation(
+    observation: Mapping[str, Any],
+    *,
+    evaluated_at: datetime | str,
+    station_metadata: Mapping[str, Any] | None = None,
+    max_age_minutes: float = 180,
+) -> QualityReport:
+    return validate_observation(
+        observation,
+        evaluated_at=evaluated_at,
+        max_age_minutes=max_age_minutes,
+        station_metadata=station_metadata,
+    )
 
 
 def validate_forecast(
@@ -118,8 +162,10 @@ def validate_forecast(
     checks: list[QualityCheck] = []
     model_name = _optional_text(forecast, "model_name")
     run_at = _optional_datetime(forecast, "run_at")
+    valid_at = _optional_datetime(forecast, "valid_at")
     target_date = _optional_date(forecast, "target_date") or _optional_date(forecast, "valid_date")
     predicted_high = _float_field(checks, forecast, "predicted_high_f", aliases=("high_f", "temperature_f"))
+    forecast_hour = _optional_int_field(checks, forecast, "forecast_hour", aliases=("fhour", "fhr"))
 
     _require_present(checks, "model_name", model_name, "Forecast model name is required")
     _require_present(checks, "run_at", run_at, "Forecast run time is required")
@@ -139,10 +185,33 @@ def validate_forecast(
                 future_tolerance_minutes=future_tolerance_minutes,
             )
         )
+    if forecast_hour is None and valid_at is not None:
+        checks.append(_warn("forecast_hour-missing", "Forecast hour is missing"))
+    elif forecast_hour is not None:
+        if 0 <= forecast_hour <= 384:
+            checks.append(_pass("forecast_hour-range", "Forecast hour is within supported range"))
+        else:
+            checks.append(_fail("forecast_hour-range", "Forecast hour must be between 0 and 384"))
+
+    if run_at is not None and valid_at is not None and forecast_hour is not None:
+        aligned_hours = (_as_utc(valid_at) - _as_utc(run_at)).total_seconds() / 3600
+        if abs(aligned_hours - forecast_hour) <= 0.01:
+            checks.append(_pass("forecast-hour-aligned", "Forecast hour aligns run_at and valid_at"))
+        else:
+            checks.append(_fail("forecast-hour-misaligned", "Forecast hour does not align run_at and valid_at"))
+
+    if model_name and model_name.upper() not in KNOWN_MODEL_NAMES:
+        checks.append(_warn("unsupported-model-name", f"Forecast model {model_name} is not in the supported model warning allow-list"))
+    elif model_name:
+        checks.append(_pass("model-name-supported", "Forecast model name is supported or recognized"))
 
     _presence_warning(checks, forecast, "model_cycle", "Forecast model cycle is missing")
     _presence_warning(checks, forecast, "source_url", "Forecast source URL is missing")
     _presence_warning(checks, forecast, "provenance", "Forecast provenance is missing")
+    if _has_extraction_metadata(forecast):
+        checks.append(_pass("extraction-metadata-present", "Forecast extraction metadata is present"))
+    elif any(key in forecast for key in ("extraction_station", "extraction_gridpoint", "extraction_lat", "extraction_lon", "station", "gridpoint", "lat", "lon", "latitude", "longitude")):
+        checks.append(_warn("extraction-metadata-missing", "Forecast extraction metadata is missing"))
     return _report(checks)
 
 
@@ -228,6 +297,48 @@ def _observation_context_checks(
         checks.append(_warn("observation-frozen-value-hint", "At least three same-station observations repeat the same temperature"))
     elif len(temps_by_time) >= 3:
         checks.append(_pass("observation-frozen-value-hint", "No frozen-temperature hint found"))
+    return checks
+
+
+def _station_metadata_checks(
+    station: str,
+    metadata: Mapping[str, Any] | None,
+    *,
+    observed_at: datetime | None,
+) -> list[QualityCheck]:
+    checks: list[QualityCheck] = []
+    if metadata is None:
+        return [_warn("station-metadata-missing", f"Station metadata is missing for {station}")]
+    metadata_station = (_optional_text(metadata, "station_id") or _optional_text(metadata, "station") or "").upper()
+    if metadata_station and metadata_station != station.upper():
+        checks.append(_warn("station-metadata-mismatch", f"Station metadata id {metadata_station} does not match {station}"))
+    else:
+        checks.append(_pass("station-metadata-present", f"Station metadata is present for {station}"))
+
+    source_class = (_optional_text(metadata, "source_class") or "").lower()
+    if source_class in {"official", "primary_official", "noaa", "nws", "asos_awos"}:
+        checks.append(_pass("official-source-class", "Observation station is an official source"))
+    elif source_class:
+        checks.append(_warn("proxy-source-class", "Observation station is a proxy rather than an official source"))
+    else:
+        checks.append(_warn("station-source-class-missing", "Observation station source_class is missing"))
+
+    if observed_at is not None:
+        active_from = _optional_date(metadata, "active_from")
+        active_to = _optional_date(metadata, "active_to")
+        obs_date = _as_utc(observed_at).date()
+        if active_from is not None and obs_date < active_from:
+            checks.append(_warn("station-inactive-at-observation", "Observation predates station active_from"))
+        elif active_to is not None and obs_date > active_to:
+            checks.append(_warn("station-inactive-at-observation", "Observation is after station active_to"))
+        else:
+            checks.append(_pass("station-active-at-observation", "Station is active at observation time"))
+
+    if source_class and source_class not in {"official", "primary_official", "noaa", "nws", "asos_awos"}:
+        if _optional_float(metadata, "proxy_distance_km") is None:
+            checks.append(_warn("proxy-distance-placeholder", "Proxy station distance is not yet quantified"))
+        if _optional_float(metadata, "proxy_elevation_delta_m") is None:
+            checks.append(_warn("proxy-elevation-placeholder", "Proxy station elevation delta is not yet quantified"))
     return checks
 
 
@@ -340,6 +451,23 @@ def _float_field(
     return parsed
 
 
+def _optional_int_field(
+    checks: list[QualityCheck],
+    record: Mapping[str, Any],
+    key: str,
+    *,
+    aliases: tuple[str, ...] = (),
+) -> int | None:
+    value = _first_present(record, key, aliases)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        checks.append(_fail(f"{key}-invalid", f"{key} must be an integer"))
+        return None
+
+
 def _optional_datetime(record: Mapping[str, Any], key: str) -> datetime | None:
     value = record.get(key)
     if value is None or value == "":
@@ -375,6 +503,16 @@ def _first_present(record: Mapping[str, Any], key: str, aliases: tuple[str, ...]
         if candidate in record:
             return record[candidate]
     return None
+
+
+def _has_extraction_metadata(record: Mapping[str, Any]) -> bool:
+    if _optional_text(record, "extraction_station") or _optional_text(record, "station"):
+        return True
+    if _optional_text(record, "extraction_gridpoint") or _optional_text(record, "gridpoint"):
+        return True
+    return _optional_float(record, "extraction_lat", aliases=("lat", "latitude")) is not None and _optional_float(
+        record, "extraction_lon", aliases=("lon", "longitude")
+    ) is not None
 
 
 def _require_datetime(value: datetime | str, field_name: str) -> datetime:

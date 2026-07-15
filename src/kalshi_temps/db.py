@@ -51,6 +51,8 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
             CREATE TABLE IF NOT EXISTS observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER NOT NULL REFERENCES data_sources(id) ON DELETE CASCADE,
+                station_metadata_id INTEGER REFERENCES station_metadata(id) ON DELETE SET NULL,
+                source_poll_id INTEGER REFERENCES source_polls(id) ON DELETE SET NULL,
                 station TEXT NOT NULL,
                 observed_at TEXT NOT NULL,
                 temperature_f REAL NOT NULL,
@@ -59,10 +61,56 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 wind_speed_mph REAL,
                 pressure_mb REAL,
                 cloud_ceiling_ft INTEGER,
+                visibility_miles REAL,
                 solar_radiation_wm2 REAL,
                 raw_payload TEXT,
+                provenance_hash TEXT,
+                qc_status TEXT,
+                qc_report TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(source_id, station, observed_at)
+            );
+
+            CREATE TABLE IF NOT EXISTS station_metadata (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id TEXT NOT NULL UNIQUE,
+                name TEXT,
+                network TEXT,
+                latitude REAL,
+                longitude REAL,
+                elevation_m REAL,
+                timezone TEXT,
+                source_class TEXT NOT NULL DEFAULT 'proxy',
+                water_exposure TEXT,
+                land_cover TEXT,
+                active_from TEXT,
+                active_to TEXT,
+                metadata_hash TEXT NOT NULL,
+                raw_payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS official_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER REFERENCES data_sources(id) ON DELETE SET NULL,
+                station_metadata_id INTEGER REFERENCES station_metadata(id) ON DELETE SET NULL,
+                source_poll_id INTEGER REFERENCES source_polls(id) ON DELETE SET NULL,
+                station TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                temperature_f REAL NOT NULL,
+                dew_point_f REAL,
+                wind_direction_deg INTEGER,
+                wind_speed_mph REAL,
+                pressure_mb REAL,
+                cloud_ceiling_ft INTEGER,
+                source_url TEXT,
+                provenance_hash TEXT,
+                qc_status TEXT,
+                qc_report TEXT,
+                raw_payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(station, observed_at, source_id)
             );
 
             CREATE TABLE IF NOT EXISTS forecast_discussions (
@@ -119,18 +167,100 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS kalshi_market_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                event_ticker TEXT,
+                title TEXT NOT NULL,
+                subtitle TEXT,
+                yes_sub_title TEXT,
+                no_sub_title TEXT,
+                status TEXT,
+                market_type TEXT,
+                open_time TEXT,
+                close_time TEXT,
+                expiration_time TEXT,
+                rules_primary TEXT,
+                rules_secondary TEXT,
+                yes_bid_cents INTEGER,
+                yes_ask_cents INTEGER,
+                no_bid_cents INTEGER,
+                no_ask_cents INTEGER,
+                last_price_cents INTEGER,
+                implied_probability REAL,
+                rank_score INTEGER NOT NULL DEFAULT 0,
+                rank_reasons TEXT NOT NULL DEFAULT '[]',
+                source_url TEXT,
+                captured_at TEXT NOT NULL,
+                raw_payload_hash TEXT NOT NULL,
+                raw_payload TEXT NOT NULL,
+                selected INTEGER NOT NULL DEFAULT 0,
+                selection_notes TEXT,
+                selected_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(target_date, ticker)
+            );
+
+            CREATE TABLE IF NOT EXISTS kalshi_market_selections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_date TEXT NOT NULL UNIQUE,
+                ticker TEXT NOT NULL,
+                selected_at TEXT NOT NULL,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS model_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_at TEXT NOT NULL DEFAULT (datetime('now')),
                 model_name TEXT NOT NULL,
                 model_cycle TEXT,
+                valid_at TEXT,
+                forecast_hour INTEGER,
                 valid_date TEXT,
                 target_date TEXT NOT NULL,
+                extraction_lat REAL,
+                extraction_lon REAL,
+                extraction_station TEXT,
+                extraction_gridpoint TEXT,
                 predicted_high_f REAL,
                 confidence REAL,
                 source_url TEXT,
                 provenance TEXT,
+                hourly_temperatures TEXT,
+                percentiles TEXT,
+                raw_payload_hash TEXT,
                 notes TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS model_run_extractions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_run_id INTEGER NOT NULL REFERENCES model_runs(id) ON DELETE CASCADE,
+                extraction_lat REAL,
+                extraction_lon REAL,
+                extraction_station TEXT,
+                extraction_gridpoint TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(model_run_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS model_run_deltas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_run_id INTEGER NOT NULL REFERENCES model_runs(id) ON DELETE CASCADE,
+                previous_model_run_id INTEGER REFERENCES model_runs(id) ON DELETE SET NULL,
+                model_name TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                run_at TEXT NOT NULL,
+                previous_run_at TEXT,
+                predicted_high_f REAL,
+                previous_predicted_high_f REAL,
+                change_f REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(model_run_id)
             );
 
             CREATE TABLE IF NOT EXISTS model_spread (
@@ -178,6 +308,24 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 UNIQUE(forecast_discussion_id, extracted_at)
             );
 
+            CREATE TABLE IF NOT EXISTS cloud_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                cloud_cover_pct REAL,
+                stratus_extent_pct REAL,
+                fog_present INTEGER,
+                burnoff_status TEXT,
+                burnoff_time TEXT,
+                confidence REAL,
+                source_url TEXT,
+                source_hash TEXT,
+                notes TEXT,
+                raw_features TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(source, observed_at, source_hash)
+            );
+
             CREATE TABLE IF NOT EXISTS intraday_features (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER REFERENCES data_sources(id) ON DELETE SET NULL,
@@ -196,6 +344,36 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 cloud_trend TEXT,
                 marine_layer_cleared_before_10am INTEGER,
                 raw_features TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(station, snapshot_at)
+            );
+
+            CREATE TABLE IF NOT EXISTS nowcast_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station TEXT,
+                snapshot_at TEXT NOT NULL,
+                local_snapshot_time TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                snapshot_hour_local INTEGER NOT NULL,
+                current_temp_f REAL,
+                intraday_max_f REAL,
+                warming_rate_f_per_hour REAL,
+                dew_point_f REAL,
+                wind_direction_deg INTEGER,
+                wind_speed_mph REAL,
+                pressure_mb REAL,
+                cloud_ceiling_ft INTEGER,
+                visibility_miles REAL,
+                solar_radiation_wm2 REAL,
+                solar_proxy REAL,
+                cloud_trend TEXT,
+                ceiling_trend TEXT,
+                wind_shift TEXT,
+                marine_push_indicator TEXT,
+                remaining_solar_window_proxy TEXT,
+                remaining_upside_distribution TEXT,
+                data_status TEXT,
+                raw_snapshot TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(station, snapshot_at)
             );
@@ -222,6 +400,38 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 UNIQUE(station, target_date)
             );
 
+            CREATE TABLE IF NOT EXISTS settlement_replays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                official_outcome_id INTEGER REFERENCES official_outcomes(id) ON DELETE SET NULL,
+                status TEXT NOT NULL,
+                settlement_bucket TEXT,
+                bucket_matched INTEGER NOT NULL DEFAULT 0,
+                mismatch_reasons TEXT NOT NULL DEFAULT '[]',
+                reconciliation_error TEXT,
+                official_value REAL,
+                official_units TEXT,
+                normalized_value REAL,
+                rounded_value REAL,
+                evaluation_units TEXT,
+                source_url TEXT,
+                official_source_name TEXT,
+                raw_payload_hash TEXT NOT NULL,
+                raw_official_payload TEXT,
+                first_published_value REAL,
+                corrected_value REAL,
+                correction_applied INTEGER NOT NULL DEFAULT 0,
+                fallback_used INTEGER NOT NULL DEFAULT 0,
+                replayed_at TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                market_rule_verified INTEGER NOT NULL DEFAULT 0,
+                replay_result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(ticker, target_date, raw_payload_hash, rule_version)
+            );
+
             CREATE TABLE IF NOT EXISTS prediction_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 snapshot_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -236,6 +446,18 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 source_name TEXT,
                 notes TEXT,
                 raw_payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS backfill_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_path TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('running', 'success', 'partial_failure', 'failed')),
+                counts_json TEXT NOT NULL DEFAULT '{}',
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                finished_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -294,26 +516,100 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS paper_live_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_name TEXT NOT NULL,
+                station TEXT NOT NULL DEFAULT 'KSEA',
+                target_date TEXT,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at TEXT,
+                status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed')),
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_live_checklist_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES paper_live_runs(id) ON DELETE CASCADE,
+                checklist_date TEXT NOT NULL,
+                item TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'blocked')),
+                notes TEXT,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_live_prediction_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES paper_live_runs(id) ON DELETE CASCADE,
+                target_date TEXT,
+                predicted_high_f REAL,
+                probability_bucket TEXT,
+                confidence REAL,
+                note TEXT NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_live_reconciliation_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES paper_live_runs(id) ON DELETE CASCADE,
+                note_type TEXT NOT NULL DEFAULT 'postmortem'
+                    CHECK (note_type IN ('postmortem', 'reconciliation')),
+                target_date TEXT,
+                note TEXT NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_live_soak_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES paper_live_runs(id) ON DELETE CASCADE,
+                measured_at TEXT NOT NULL DEFAULT (datetime('now')),
+                uptime_status TEXT NOT NULL DEFAULT 'not-measured',
+                collector_success_count INTEGER NOT NULL DEFAULT 0,
+                collector_failure_count INTEGER NOT NULL DEFAULT 0,
+                backup_success INTEGER NOT NULL DEFAULT 0,
+                alert_count INTEGER NOT NULL DEFAULT 0,
+                notes TEXT
+            );
+
             CREATE VIEW IF NOT EXISTS collector_runs AS
             SELECT * FROM source_polls;
 
             CREATE INDEX IF NOT EXISTS idx_observations_observed_at ON observations(observed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_observations_source ON observations(source_id);
+            CREATE INDEX IF NOT EXISTS idx_station_metadata_network ON station_metadata(network, station_id);
+            CREATE INDEX IF NOT EXISTS idx_official_observations_observed ON official_observations(station, observed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_forecast_discussions_issued ON forecast_discussions(issued_at DESC);
             CREATE INDEX IF NOT EXISTS idx_model_runs_target ON model_runs(target_date, model_name);
             CREATE INDEX IF NOT EXISTS idx_market_snapshots_bucket ON market_snapshots(temperature_bucket, captured_at DESC);
             CREATE INDEX IF NOT EXISTS idx_market_rules_status ON market_rules(verification_status, ticker);
+            CREATE INDEX IF NOT EXISTS idx_kalshi_candidates_target ON kalshi_market_candidates(target_date, rank_score DESC);
+            CREATE INDEX IF NOT EXISTS idx_kalshi_candidates_ticker ON kalshi_market_candidates(ticker, captured_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_kalshi_selections_target ON kalshi_market_selections(target_date, selected_at DESC);
             CREATE INDEX IF NOT EXISTS idx_probability_buckets_run ON model_probability_buckets(model_run_id);
+            CREATE INDEX IF NOT EXISTS idx_model_deltas_target ON model_run_deltas(target_date, model_name, run_at DESC);
             CREATE INDEX IF NOT EXISTS idx_official_outcomes_target ON official_outcomes(station, target_date);
+            CREATE INDEX IF NOT EXISTS idx_settlement_replays_ticker
+                ON settlement_replays(ticker, target_date, replayed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_prediction_snapshots_target ON prediction_snapshots(station, target_date, model_name);
+            CREATE INDEX IF NOT EXISTS idx_backfill_runs_source_hash ON backfill_runs(source_hash, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_historical_bias_group ON historical_bias(model_name, regime, station);
             CREATE INDEX IF NOT EXISTS idx_calibration_metrics_group ON calibration_metrics(model_name, station, temperature_bucket);
             CREATE INDEX IF NOT EXISTS idx_source_polls_finished ON source_polls(finished_at DESC);
             CREATE INDEX IF NOT EXISTS idx_source_polls_source_collector ON source_polls(source, collector_name, finished_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_paper_live_runs_status ON paper_live_runs(status, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_paper_live_checklist_run ON paper_live_checklist_entries(run_id, checklist_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_paper_live_notes_run ON paper_live_prediction_notes(run_id, recorded_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_paper_live_reconciliation_run ON paper_live_reconciliation_notes(run_id, recorded_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_paper_live_soak_run ON paper_live_soak_metrics(run_id, measured_at DESC);
             CREATE INDEX IF NOT EXISTS idx_weather_regime_features_extracted
                 ON weather_regime_features(extracted_at DESC);
             CREATE INDEX IF NOT EXISTS idx_intraday_features_snapshot
                 ON intraday_features(snapshot_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_cloud_features_observed
+                ON cloud_features(observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_nowcast_snapshots_time
+                ON nowcast_snapshots(target_date DESC, snapshot_hour_local, snapshot_at DESC);
             """
         )
         _ensure_columns(
@@ -325,7 +621,13 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 "wind_speed_mph": "REAL",
                 "pressure_mb": "REAL",
                 "cloud_ceiling_ft": "INTEGER",
+                "visibility_miles": "REAL",
                 "solar_radiation_wm2": "REAL",
+                "station_metadata_id": "INTEGER REFERENCES station_metadata(id) ON DELETE SET NULL",
+                "source_poll_id": "INTEGER REFERENCES source_polls(id) ON DELETE SET NULL",
+                "provenance_hash": "TEXT",
+                "qc_status": "TEXT",
+                "qc_report": "TEXT",
             },
         )
         _ensure_columns(
@@ -344,9 +646,18 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
             "model_runs",
             {
                 "model_cycle": "TEXT",
+                "valid_at": "TEXT",
+                "forecast_hour": "INTEGER",
                 "valid_date": "TEXT",
+                "extraction_lat": "REAL",
+                "extraction_lon": "REAL",
+                "extraction_station": "TEXT",
+                "extraction_gridpoint": "TEXT",
                 "source_url": "TEXT",
                 "provenance": "TEXT",
+                "hourly_temperatures": "TEXT",
+                "percentiles": "TEXT",
+                "raw_payload_hash": "TEXT",
                 "notes": "TEXT",
                 "confidence": "REAL",
             },
@@ -410,6 +721,71 @@ def initialize_database(path: str | os.PathLike[str] | None = None) -> Path:
                 "verified_at": "TEXT",
                 "source_url": "TEXT NOT NULL DEFAULT ''",
                 "notes": "TEXT",
+                "updated_at": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "kalshi_market_candidates",
+            {
+                "event_ticker": "TEXT",
+                "subtitle": "TEXT",
+                "yes_sub_title": "TEXT",
+                "no_sub_title": "TEXT",
+                "status": "TEXT",
+                "market_type": "TEXT",
+                "open_time": "TEXT",
+                "close_time": "TEXT",
+                "expiration_time": "TEXT",
+                "rules_primary": "TEXT",
+                "rules_secondary": "TEXT",
+                "yes_bid_cents": "INTEGER",
+                "yes_ask_cents": "INTEGER",
+                "no_bid_cents": "INTEGER",
+                "no_ask_cents": "INTEGER",
+                "last_price_cents": "INTEGER",
+                "implied_probability": "REAL",
+                "rank_score": "INTEGER NOT NULL DEFAULT 0",
+                "rank_reasons": "TEXT NOT NULL DEFAULT '[]'",
+                "source_url": "TEXT",
+                "captured_at": "TEXT NOT NULL DEFAULT (datetime('now'))",
+                "raw_payload_hash": "TEXT NOT NULL DEFAULT ''",
+                "raw_payload": "TEXT NOT NULL DEFAULT '{}'",
+                "selected": "INTEGER NOT NULL DEFAULT 0",
+                "selection_notes": "TEXT",
+                "selected_at": "TEXT",
+                "updated_at": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "settlement_replays",
+            {
+                "ticker": "TEXT NOT NULL DEFAULT ''",
+                "target_date": "TEXT NOT NULL DEFAULT ''",
+                "official_outcome_id": "INTEGER",
+                "status": "TEXT NOT NULL DEFAULT 'unmatched'",
+                "settlement_bucket": "TEXT",
+                "bucket_matched": "INTEGER NOT NULL DEFAULT 0",
+                "mismatch_reasons": "TEXT NOT NULL DEFAULT '[]'",
+                "reconciliation_error": "TEXT",
+                "official_value": "REAL",
+                "official_units": "TEXT",
+                "normalized_value": "REAL",
+                "rounded_value": "REAL",
+                "evaluation_units": "TEXT",
+                "source_url": "TEXT",
+                "official_source_name": "TEXT",
+                "raw_payload_hash": "TEXT NOT NULL DEFAULT ''",
+                "raw_official_payload": "TEXT",
+                "first_published_value": "REAL",
+                "corrected_value": "REAL",
+                "correction_applied": "INTEGER NOT NULL DEFAULT 0",
+                "fallback_used": "INTEGER NOT NULL DEFAULT 0",
+                "replayed_at": "TEXT",
+                "rule_version": "TEXT NOT NULL DEFAULT ''",
+                "market_rule_verified": "INTEGER NOT NULL DEFAULT 0",
+                "replay_result_json": "TEXT NOT NULL DEFAULT '{}'",
                 "updated_at": "TEXT",
             },
         )

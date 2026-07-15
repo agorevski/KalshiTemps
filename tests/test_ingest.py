@@ -302,3 +302,42 @@ def test_source_freshness_metadata_and_provenance_hash_are_deterministic() -> No
     assert metadata["age_minutes"] == 30
     assert metadata["is_fresh"] is True
     assert metadata["provenance_hash"] == provenance_hash({key: value for key, value in metadata.items() if key != "provenance_hash"})
+
+
+def test_model_forecast_import_persists_extraction_metadata_and_deltas() -> None:
+    from kalshi_temps.db import connection, initialize_database
+    from kalshi_temps.repository import WeatherRepository
+    import uuid
+
+    db_path = Path("data") / f"test-model-adapter-foundations-{uuid.uuid4().hex}.sqlite3"
+    try:
+        initialize_database(str(db_path))
+        records = parse_model_high_records(
+            [
+                {
+                    "model_name": "NBM",
+                    "run_at": "2026-07-14T12:00:00Z",
+                    "valid_at": "2026-07-15T00:00:00Z",
+                    "station": "KSEA",
+                    "high_f": 74,
+                },
+                {
+                    "model_name": "NBM",
+                    "run_at": "2026-07-14T18:00:00Z",
+                    "valid_at": "2026-07-15T06:00:00Z",
+                    "station": "KSEA",
+                    "high_f": 77,
+                },
+            ]
+        )
+        with connection(str(db_path)) as conn:
+            repo = WeatherRepository(conn)
+            repo.import_model_high_records(records)
+            repo.import_model_high_records(records)
+            assert conn.execute("SELECT COUNT(*) AS c FROM model_runs").fetchone()["c"] == 2
+            assert conn.execute("SELECT COUNT(*) AS c FROM model_run_extractions").fetchone()["c"] == 2
+            delta = repo.list_model_run_deltas(target_date="2026-07-15")[0]
+        assert delta["change_f"] == 3
+        assert delta["previous_predicted_high_f"] == 74
+    finally:
+        db_path.unlink(missing_ok=True)

@@ -12,6 +12,23 @@ from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .model_adapters import (
+    fetch_model_forecast_records,
+    load_model_forecast_records,
+    normalize_model_forecast,
+    parse_model_forecast_records,
+)
+
+from .official_sources import (
+    DEFAULT_NWS_OBSERVATION_URL_TEMPLATE,
+    collect_nws_station_observation,
+    load_station_metadata,
+    parse_climate_daily_summary_records,
+    parse_nearby_asos_awos_stations,
+    parse_nws_station_observation,
+    parse_station_metadata_records,
+)
+
 
 _METAR_TIME_RE = re.compile(r"^(?P<day>\d{2})(?P<hour>\d{2})(?P<minute>\d{2})Z$")
 _WIND_RE = re.compile(r"^(?P<direction>\d{3}|VRB)(?P<speed>\d{2,3})(G\d{2,3})?KT$")
@@ -126,55 +143,35 @@ def normalize_observation(
 
 
 def normalize_model_high(record: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize a forecast model high-temperature record."""
-    if not isinstance(record, Mapping):
-        raise ValueError("model high record must be a mapping")
+    """Normalize a forecast model high-temperature record.
 
-    model_name = _required_str(record, "model_name")
-    predicted = _required_float(record, "predicted_high_f", aliases=("high_f", "temperature_f"))
-    run_at = _datetime_to_iso(_parse_datetime_required(record.get("run_at"), "run_at"))
-    target = record.get("target_date", record.get("valid_date"))
-    if target is None:
-        raise ValueError("model high target_date or valid_date is required")
-
-    normalized = {
-        "model_name": model_name,
-        "model_cycle": _optional_str(record, "model_cycle"),
-        "run_at": run_at,
-        "valid_date": _date_to_iso(target, "valid_date"),
-        "target_date": _date_to_iso(record.get("target_date", target), "target_date"),
-        "predicted_high_f": predicted,
-        "source_url": _optional_str(record, "source_url"),
-        "provenance": record.get("provenance"),
-    }
-    if "probability_buckets" in record or "probabilities" in record or "buckets" in record:
-        normalized["probability_buckets"] = _normalize_probability_buckets(
-            _first_present(record, "probability_buckets", ("probabilities", "buckets"))
-        )
-    normalized["provenance_hash"] = provenance_hash(normalized)
-    if normalized["provenance"] is None:
-        normalized["provenance"] = normalized["provenance_hash"]
-    return normalized
+    Backward-compatible wrapper over the HRRR/NAM/GFS/NBM-style adapter foundation.
+    """
+    return normalize_model_forecast(record)
 
 
 def parse_model_high_records(payload: str | bytes | Mapping[str, Any] | list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Normalize manually supplied model-high records from JSON/CSV-like payloads.
+    """Normalize supplied model-high records from supported JSON/CSV payloads.
 
-    This intentionally supports manual HRRR/NAM/GFS/NBM/ECMWF/GraphCast-style
+    This intentionally supports file/fetcher supplied HRRR/NAM/GFS/NBM-style
     records only; it does not collect from paid/private model APIs.
     """
-    raw_records = _coerce_model_high_records(payload)
-    return [normalize_model_high(record) for record in raw_records]
+    return parse_model_forecast_records(payload)
 
 
 def load_model_high_records(path: str | Path) -> list[dict[str, Any]]:
-    """Read a JSON or CSV file of model-high records and normalize them."""
-    record_path = Path(path)
-    text = record_path.read_text(encoding="utf-8")
-    if record_path.suffix.lower() == ".json" or text.lstrip().startswith(("{", "[")):
-        return parse_model_high_records(text)
-    return parse_model_high_records(_csv_records(text))
+    """Read a JSON or CSV file of model-high/model-forecast records and normalize them."""
+    return load_model_forecast_records(path)
 
+
+def collect_model_high_records(
+    url: str,
+    *,
+    fetcher: TextFetcher | None = None,
+    timeout: float = 10,
+) -> list[dict[str, Any]]:
+    """Fetch supported JSON/CSV model payloads with an injectable fetcher; no API integration implied."""
+    return fetch_model_forecast_records(url, fetcher=fetcher, timeout=timeout)
 
 def normalize_market_snapshot(record: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize a market price snapshot into implied-probability friendly fields."""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import sys
 import uuid
@@ -9,7 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from kalshi_temps.calibration import (  # noqa: E402
     bucket_brier_score,
     bucket_contains_temperature,
+    bucket_log_loss,
     chronological_split_date,
+    generate_calibration_report,
     forecast_error,
     grouped_bias_summary,
     leakage_safe_date_split,
@@ -66,6 +69,7 @@ def test_brier_reliability_bucket_and_empty_edges() -> None:
     assert bucket_contains_temperature("73-74°F", 74)
     assert bucket_contains_temperature("77°F+", 77)
     assert not bucket_contains_temperature("75-76°F", 77)
+    assert round(bucket_log_loss([{"probability": 0.8, "outcome": 1}]), 6) == round(-math.log(0.8), 6)
 
 
 def test_leakage_safe_date_split_helpers() -> None:
@@ -79,6 +83,44 @@ def test_leakage_safe_date_split_helpers() -> None:
     assert [record["value"] for record in split["train"]] == ["train"]
     assert [record["value"] for record in split["test"]] == ["test"]
     assert chronological_split_date([record["target_date"] for record in records], test_fraction=0.34).isoformat() == "2026-07-02"
+
+
+def test_generate_calibration_report_metrics_missingness_and_empty_data() -> None:
+    report = generate_calibration_report(
+        [
+            {
+                "model_name": "A",
+                "regime": "marine",
+                "station": "KSEA",
+                "snapshot_at": "2026-07-01T12:00:00+00:00",
+                "target_date": "2026-07-01",
+                "predicted_high_f": 76,
+                "actual_high_f": 75,
+                "temperature_bucket": "75-76°F",
+                "probability": 0.8,
+            },
+            {
+                "model_name": "A",
+                "station": "KSEA",
+                "snapshot_at": "2026-07-02T18:00:00+00:00",
+                "target_date": "2026-07-02",
+                "predicted_high_f": 72,
+            },
+        ],
+        bin_count=5,
+        split_date="2026-07-02",
+    )
+
+    assert report["sample_sizes"]["prediction_count"] == 2
+    assert report["sample_sizes"]["matched_outcome_count"] == 1
+    assert report["bucket_metrics"][0]["brier_score"] == (0.8 - 1) ** 2
+    assert report["mae"]
+    assert report["missingness"]["fields"]["actual_high_f"]["missing_count"] == 1
+    assert report["leakage_safe_split"]["valid"] is False
+
+    empty = generate_calibration_report([])
+    assert empty["sample_sizes"]["prediction_count"] == 0
+    assert empty["bucket_metrics"] == []
 
 
 def test_repository_persists_outcomes_predictions_bias_and_calibration() -> None:
