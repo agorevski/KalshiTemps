@@ -10,8 +10,7 @@ Run commands from the repository root. Use `PYTHONPATH=src` unless the package i
 PYTHONPATH=src python -m kalshi_temps init-db
 PYTHONPATH=src python -m kalshi_temps seed-demo
 PYTHONPATH=src uvicorn kalshi_temps.app:app --host 127.0.0.1 --port 8000
-PYTHONPATH=src python -m compileall -q src tests
-PYTHONPATH=src pytest
+scripts/run_tests.sh
 ```
 
 Use `KALSHI_TEMPS_DB` to override the default local database path, `data/kalshi_temps.sqlite3`. Keep runtime data under `data/` out of source control.
@@ -38,6 +37,7 @@ Use `KALSHI_TEMPS_DB` to override the default local database path, `data/kalshi_
 - Avoid broad exception handlers, hidden fallbacks, unnecessary casts, success-shaped defaults, and network-dependent tests.
 - Preserve backward-compatible SQLite initialization where possible. Add indexes and schema fields deliberately, and document schema/risk changes.
 - Add/update tests for behavior changes: pure parser/fusion unit tests first; SQLite/FastAPI integration tests for persistence or routes.
+- When making code changes, run `scripts/run_tests.sh` from the repository root before finishing so compile checks and all current/future pytest tests are validated through the same entry point used by CI.
 
 ## Data and provenance rules
 
