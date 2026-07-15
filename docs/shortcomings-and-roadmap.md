@@ -24,7 +24,7 @@ Implemented in-repository foundations include:
 Unless implemented outside this repository and independently verified, assume the following remain **unresolved**:
 
 - Real market-specific rule verification by the user or another trusted reviewer for every ticker.
-- Live Kalshi feed credentials, account permissions, market metadata, bid/ask, order-book, private API ingestion, and feed-permission validation.
+- Production-grade Kalshi ingestion, order-book depth, account/portfolio integration, order placement, and feed-permission validation. Read-only market discovery/snapshot support may exist, but it is not trading automation.
 - Paid/licensed ECMWF archive/API access, GraphCast/AI weather feeds, and associated storage/license compliance.
 - Actual satellite image processing and quantitative cloud/stratus burn-off extraction from imagery.
 - Real long-running paper-live soak with scheduled collectors, retries, monitoring, alerting, backups, restore drills, and weeks of reconciliation.
@@ -39,7 +39,7 @@ Unless implemented outside this repository and independently verified, assume th
 ### Data ingestion and operations gaps
 
 - **Collector operations are foundational, not production**: manual and one-shot collector commands can persist poll records and health summaries, but live scheduling, daemon supervision, alerting, retry policy validation, and multi-week soak are still required.
-- **Live Kalshi data is not connected**: market-implied probabilities remain demo/manual/placeholder records until permitted Kalshi metadata and bid/ask/order-book ingestion is implemented, timestamped, and audited.
+- **Kalshi data remains limited**: read-only market discovery/snapshots can persist candidate metadata and top-of-book prices, but production-grade ingestion, order-book depth, account integration, and trading controls are not implemented.
 - **Paid model feeds are unresolved**: ECMWF and GraphCast references remain external dependencies until valid licenses, endpoints, terms, and collectors exist.
 - **Satellite imagery is not processed**: cloud features can be imported as manual/proxy records, but actual image processing for cloud/stratus burn-off is not implemented.
 - **Historical data is shallow**: official outcomes, snapshots, bias summaries, calibration metrics, and backfill runs can be stored and computed locally, but there is not enough real backfill to claim calibrated probabilities.

@@ -5,8 +5,8 @@ This runbook is for operating the current local Kalshi Temps research scaffold. 
 ## Operating assumptions
 
 - The project is a local FastAPI + SQLite research tool for Seattle daily high-temperature evidence.
-- The current repository supports local database initialization, demo data, a dashboard, API routes, normalizers, market-rule records, manual public NWS/METAR collectors, model imports, weather-feature extraction, collector health, and calibration scaffolding.
-- Unless independently implemented and verified elsewhere, assume there is no production scheduled weather ingestion, live Kalshi market feed, authentication, production deployment, or automated trading.
+- The current repository supports local database initialization, demo data, a dashboard, API routes, normalizers, read-only Kalshi market discovery/snapshots, market-rule records, manual public NWS/METAR collectors, model imports, weather-feature extraction, collector health, and calibration scaffolding.
+- Unless independently implemented and verified elsewhere, assume there is no production scheduled weather ingestion, authenticated dashboard deployment, account/portfolio integration, order placement, or automated trading.
 - Dashboard output is research and recordkeeping only. It is not financial advice and must not be treated as a trade instruction.
 
 ## Prerequisites
@@ -38,6 +38,28 @@ export PYTHONPATH=src
 | `PYTHONPATH` | unset | direct module runs | Use `src` when the package is not installed. Scripts prepend `src` automatically. |
 | `HOST` | `127.0.0.1` | `scripts/run_local.sh` | Keep loopback as the safe default. |
 | `PORT` | `8000` | `scripts/run_local.sh` | Local dashboard/API port. |
+| `KALSHI_API_BASE_URL` | `https://external-api.kalshi.com/trade-api/v2` | Kalshi CLI | Read-only market data base URL. Use `https://external-api.demo.kalshi.co/trade-api/v2` for demo. |
+| `KALSHI_API_KEY_ID` | unset | Kalshi CLI | Kalshi API key id. Keep out of source control. |
+| `KALSHI_API_PRIVATE_KEY_PATH` | unset | Kalshi CLI | Absolute path to the RSA private key file. Do not commit this file. |
+| `KALSHI_API_TIMEOUT_SECONDS` | `10` | Kalshi CLI | Request timeout for read-only Kalshi calls. |
+
+### Local `.env` setup for Kalshi
+
+Copy `.env.example` to `.env` and fill in local values:
+
+```bash
+cp .env.example .env
+```
+
+Use a private key path rather than pasting key material into source files:
+
+```bash
+KALSHI_API_BASE_URL=https://external-api.kalshi.com/trade-api/v2
+KALSHI_API_KEY_ID=your-key-id
+KALSHI_API_PRIVATE_KEY_PATH=/absolute/path/to/kalshi-private-key.pem
+```
+
+`.env` and `.env.*` are ignored by git. Never commit API keys or private key files.
 
 ## Database lifecycle
 
@@ -112,6 +134,30 @@ Open:
 - Health: <http://127.0.0.1:8000/health/json>
 
 Health should return JSON with `status: ok`, `service: kalshi-temps`, and non-sensitive database status. Use `PYTHONPATH=src python -m kalshi_temps ops-status` locally when you need the full configured path.
+
+## Read-only Kalshi market workflow
+
+Find candidate Seattle climate/high-temperature markets for the target date:
+
+```bash
+PYTHONPATH=src python -m kalshi_temps find-kalshi-markets --target-date YYYY-MM-DD
+```
+
+Review the ranked list. The rank score is only a text/date match aid; it is not settlement verification. Select one locally:
+
+```bash
+PYTHONPATH=src python -m kalshi_temps select-kalshi-market --target-date YYYY-MM-DD --ticker <TICKER> --draft-rule
+```
+
+`--draft-rule` creates an unverified market-rule draft from Kalshi metadata. Manually verify every settlement-rule field before marking it verified.
+
+Collect a read-only price snapshot for the selected market:
+
+```bash
+PYTHONPATH=src python -m kalshi_temps collect-selected-kalshi-market --target-date YYYY-MM-DD
+```
+
+The dashboard shows persisted candidates and lets you select one of them locally. It does not discover markets from the browser, expose credentials to the browser, place bets, or verify settlement rules automatically.
 
 ## Validation checks
 

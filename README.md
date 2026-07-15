@@ -6,17 +6,16 @@ It is designed for decision support, provenance, and recordkeeping—not guarant
 arbitrage, financial advice, or unattended trading.
 
 The current application is a working local research scaffold with validated
-SQLite/FastAPI flows, public weather collectors, station metadata, market-rule
-verification, settlement replay, forecast-model adapter foundations,
-marine/cloud nowcast signals, backfill/calibration records, collector health,
-paper-live tracking, token-gated local access, and precision dashboard/API
-integration. Full local validation has passed across 95 tests, compile checks,
-script syntax checks, CLI smoke checks, and FastAPI endpoint smoke checks. It
-still depends on external work for real market-specific rule verification by the
-user, permitted live Kalshi feeds, paid ECMWF or GraphCast licensing, actual
-satellite image processing, sufficient historical backfill, proven calibrated
-performance, long-running paper-live soak, compliance/legal review,
-production-grade auth/deployment, and any trading controls.
+SQLite/FastAPI flows, public weather collectors, station metadata, read-only
+Kalshi market discovery/snapshots, market-rule verification, settlement replay,
+forecast-model adapter foundations, marine/cloud nowcast signals,
+backfill/calibration records, collector health, paper-live tracking, token-gated
+local access, and precision dashboard/API integration. It still depends on
+external work for real market-specific rule verification by the user,
+production-grade Kalshi ingestion/order-book depth, paid ECMWF or GraphCast
+licensing, actual satellite image processing, sufficient historical backfill,
+proven calibrated performance, long-running paper-live soak, compliance/legal
+review, production-grade auth/deployment, and any trading controls.
 
 ## What the product is for
 
@@ -68,8 +67,8 @@ Remaining unresolved risks:
   backups, restore drills, and multi-week paper-live reconciliation.
 - Production-grade dashboard/API authentication, deployment hardening,
   authorization, and role-based permissions beyond the local env-token gate.
-- Live Kalshi feed credentials, permissions, metadata, bid/ask, and order-book
-  ingestion.
+- Production-grade Kalshi ingestion, order-book depth, account integration, and
+  any order placement or automated trading.
 - Paid/licensed ECMWF or GraphCast data access and license-compliant storage.
 - Satellite image processing for quantitative cloud/stratus burn-off features.
 - Real historical backfill depth and proven model calibration on sufficient
@@ -145,6 +144,43 @@ Operational expectations:
   experiments.
 - Keep demo/replay/live records distinguishable before relying on comparisons.
 
+## Read-only Kalshi API setup
+
+Kalshi market discovery is read-only. It can find candidate Seattle climate
+markets, save one local selection, and collect bid/ask snapshots. It does not
+place orders, inspect your portfolio, or verify settlement rules for you.
+
+Copy the example environment file and fill in local values:
+
+```bash
+cp .env.example .env
+```
+
+Set:
+
+```bash
+KALSHI_API_BASE_URL=https://external-api.kalshi.com/trade-api/v2
+KALSHI_API_KEY_ID=your-key-id
+KALSHI_API_PRIVATE_KEY_PATH=/absolute/path/to/kalshi-private-key.pem
+```
+
+Keep `.env` and the private key file out of source control. The CLI loads `.env`
+automatically when running Kalshi commands.
+
+Find candidate Seattle markets for a date, select one, then collect a price
+snapshot:
+
+```bash
+python -m kalshi_temps find-kalshi-markets --target-date YYYY-MM-DD
+python -m kalshi_temps select-kalshi-market --target-date YYYY-MM-DD --ticker <TICKER> --draft-rule
+python -m kalshi_temps collect-selected-kalshi-market --target-date YYYY-MM-DD
+```
+
+`--draft-rule` creates an unverified local rule draft from Kalshi metadata.
+Manually verify the exact settlement source, station/product, cutoff, units,
+rounding, fallback, and correction policy before treating any market as a
+research input.
+
 ## Key commands
 
 ```bash
@@ -168,6 +204,11 @@ python -m kalshi_temps collector-runs
 python -m kalshi_temps add-market-rule --help
 python -m kalshi_temps verify-market-rule <TICKER> --verified-by <NAME>
 python -m kalshi_temps list-market-rules
+
+# Read-only Kalshi market discovery and snapshot collection
+python -m kalshi_temps find-kalshi-markets --target-date YYYY-MM-DD
+python -m kalshi_temps select-kalshi-market --target-date YYYY-MM-DD --ticker <TICKER>
+python -m kalshi_temps collect-selected-kalshi-market --target-date YYYY-MM-DD
 
 # Import station/official observation metadata
 python -m kalshi_temps import-stations <stations.json-or-csv>
